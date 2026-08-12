@@ -2,6 +2,8 @@ import { getAccessToken } from './auth.js';
 import { getRows, appendRow, updateRow, deleteRow, findRowByRmaId } from './sheets.js';
 import { generateRmaId } from './rmaId.js';
 import { HEADERS } from './constants.js';
+import { downloadFile } from './drive.js';
+import { runRedFlagScan, runDailyReport } from './cron.js';
 
 // Tighten this to your Pages domain once it exists (e.g. 'https://pentagon-rma.pages.dev')
 const CORS_HEADERS = {
@@ -48,6 +50,16 @@ export default {
       if (url.pathname === '/return' && request.method === 'POST') {
         return await handleReturn(request, env);
       }
+      if (url.pathname === '/reports/latest' && request.method === 'GET') {
+        return await handleLatestReport(request, env);
+      }
+      // Manual triggers for testing the CRON logic without waiting for the schedule.
+      if (url.pathname === '/admin/run-redflag-scan' && request.method === 'POST') {
+        return json(await runRedFlagScan(env));
+      }
+      if (url.pathname === '/admin/run-daily-report' && request.method === 'POST') {
+        return json(await runDailyReport(env));
+      }
       return json({ error: 'Not found' }, 404);
     } catch (err) {
       return json({ error: err.message }, 500);
@@ -55,9 +67,32 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Hourly red-flag scan + daily PDF report land here in the next step.
+    if (event.cron === '0 * * * *') {
+      ctx.waitUntil(runRedFlagScan(env));
+    } else if (event.cron === '0 14 * * *') {
+      ctx.waitUntil(runDailyReport(env));
+    }
   }
 };
+
+// GET /reports/latest — proxies the most recent daily PDF report from
+// Drive through the Worker, rather than exposing a public Drive link
+// (the report contains customer names and phone numbers).
+async function handleLatestReport(request, env) {
+  const cached = await env.RMA_COUNTERS.get('latest_report', { type: 'json' });
+  if (!cached) return json({ error: 'No report generated yet' }, 404);
+
+  const accessToken = await getAccessToken(env);
+  const bytes = await downloadFile(env, accessToken, cached.fileId);
+
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${cached.filename}"`,
+      ...CORS_HEADERS
+    }
+  });
+}
 
 // GET /device-history?sn=XXXX
 // Called after the first barcode scan at intake, before a new RMA ID

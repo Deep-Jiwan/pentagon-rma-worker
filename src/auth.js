@@ -13,7 +13,6 @@ function base64url(input) {
 
 async function importPrivateKey(pem) {
   const pemBody = pem
-    .replace(/\\n/g, '\n')  // normalize literal \n from env var storage
     .replace(/-----BEGIN PRIVATE KEY-----/, '')
     .replace(/-----END PRIVATE KEY-----/, '')
     .replace(/\s/g, '');
@@ -37,7 +36,7 @@ export async function getAccessToken(env) {
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: env.GOOGLE_CLIENT_EMAIL,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive',
     aud: 'https://oauth2.googleapis.com/token',
     exp: now + 3600,
     iat: now

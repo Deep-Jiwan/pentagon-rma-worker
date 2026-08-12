@@ -1,13 +1,4 @@
-// Tanzania is UTC+3 year-round (no DST), so day boundaries for the
-// RMA ID counter are computed in EAT, not server-local UTC — otherwise
-// a device coming in at 8pm EAT could get tomorrow's date prefix.
-function getEatDateString(date = new Date()) {
-  const eat = new Date(date.getTime() + 3 * 60 * 60 * 1000);
-  const yyyy = eat.getUTCFullYear();
-  const mm = String(eat.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(eat.getUTCDate()).padStart(2, '0');
-  return `${yyyy}${mm}${dd}`;
-}
+import { getEatDateString } from './utils.js';
 
 // NOTE: KV get+put is NOT atomic. Two intakes landing in the same
 // instant could in theory read the same counter value and produce a

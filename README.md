@@ -34,6 +34,12 @@ Make sure the sheet is shared with the service account's email as
 **Editor** (done in the earlier step) — otherwise every request will
 fail with a permissions error from the Sheets API.
 
+**Also share the PentagonRMA Drive folder itself** (not just the
+sheet) with the same service account email, as Editor — this is
+needed for the daily report PDF to be saved there. Right-click the
+folder in Drive → Share → paste the `...iam.gserviceaccount.com`
+email → Editor.
+
 ## Run locally / deploy
 
 ```bash
@@ -81,9 +87,29 @@ Any of `status`, `resolution`, `repairDetails`, `technicianName`,
 Moves the ticket from Open to Closed and mirrors the final state into
 Master.
 
-## Not wired up yet
+**GET `/reports/latest`**
+Downloads the most recent daily report PDF. The Worker fetches it from
+Drive using the service account and streams it back directly — the
+Drive file itself is never made public, since the report contains
+customer names and phone numbers.
 
-- `scheduled()` is a stub — the hourly stuck-in-diagnostics red-flag
-  scan and the daily PDF report both land in the next step.
+**POST `/admin/run-redflag-scan`** and **POST `/admin/run-daily-report`**
+Manually trigger the CRON logic on demand, for testing — no need to
+wait for the actual hourly/5pm schedule. No body required for either.
+
+## CRON schedule
+
+- Hourly (`0 * * * *`): scans Open for tickets still in Diagnostics
+  with a Last Edited Timestamp older than 24h, sets Red Flag = Yes.
+- Daily at 14:00 UTC / 17:00 EAT (`0 14 * * *`): builds the PDF report
+  (new intakes today, closed today, currently red-flagged) and saves
+  it into the PentagonRMA Drive folder as `RMA-Report-YYYY-MM-DD.pdf`.
+
+## Still to do
+
 - CORS is wide open (`*`) for now — tighten `CORS_HEADERS` in
   `src/index.js` to your actual Pages domain once the frontend exists.
+- No auth/access control yet on the Worker endpoints themselves —
+  fine while it's just you testing, but worth adding before the
+  frontend is handed to technicians (e.g. a shared API key header, or
+  Cloudflare Access in front of the whole thing).

@@ -1,0 +1,9 @@
+# Copy this file to ".dev.vars" (exact name, same folder as wrangler.toml)
+# and fill in your real values — this is what `wrangler dev` reads
+# locally. It's separate from `wrangler secret put`, which only
+# affects the deployed Worker, not local dev.
+#
+# NEVER commit the real .dev.vars file — it holds live credentials.
+
+GOOGLE_CLIENT_EMAIL="rma-worker@pentagonrma.iam.gserviceaccount.com"
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQ...paste the rest...\n-----END PRIVATE KEY-----\n"
