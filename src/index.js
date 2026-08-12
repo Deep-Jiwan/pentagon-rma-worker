@@ -9,7 +9,7 @@ import { runRedFlagScan, runDailyReport } from './cron.js';
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
+  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
 };
 
 function json(data, status = 200) {
@@ -17,6 +17,16 @@ function json(data, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
   });
+}
+
+// Constant-time-ish string compare — avoids the obvious short-circuit
+// timing leak of `a === b` on a shared secret. Overkill for this scale
+// of app, but costs nothing.
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 function rowToObject(row) {
@@ -35,9 +45,19 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    // Shared API key required on every route below. Frontend sends it as
+    // X-API-Key. env.API_KEY is a Worker secret — see README.
+    const providedKey = request.headers.get('X-API-Key') || '';
+    if (!env.API_KEY || !safeEqual(providedKey, env.API_KEY)) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
     const url = new URL(request.url);
 
     try {
+      if (url.pathname === '/tickets' && request.method === 'GET') {
+        return await handleTickets(request, env);
+      }
       if (url.pathname === '/device-history' && request.method === 'GET') {
         return await handleDeviceHistory(request, env);
       }
@@ -91,6 +111,23 @@ async function handleLatestReport(request, env) {
       ...CORS_HEADERS
     }
   });
+}
+
+// GET /tickets?tab=Open|Closed|Master (default Open)
+// Powers the Dashboard's ticket table. Master is included as an option
+// mainly for analytics use later — Open/Closed cover day-to-day.
+async function handleTickets(request, env) {
+  const url = new URL(request.url);
+  const tab = url.searchParams.get('tab') || 'Open';
+  if (!['Open', 'Closed', 'Master'].includes(tab)) {
+    return json({ error: 'tab must be one of Open, Closed, Master' }, 400);
+  }
+
+  const accessToken = await getAccessToken(env);
+  const rows = await getRows(env, accessToken, tab);
+  const tickets = rows.map(rowToObject);
+
+  return json({ tab, count: tickets.length, tickets });
 }
 
 // GET /device-history?sn=XXXX

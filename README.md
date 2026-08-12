@@ -24,6 +24,11 @@ npx wrangler secret put GOOGLE_CLIENT_EMAIL
 npx wrangler secret put GOOGLE_PRIVATE_KEY
 # paste the FULL "private_key" value from the JSON key, including the
 # -----BEGIN PRIVATE KEY----- / -----END PRIVATE KEY----- lines
+
+npx wrangler secret put API_KEY
+# any random string — this is the shared key the frontend sends as
+# X-API-Key on every request. Generate one with e.g.
+# `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 ```
 
 `SPREADSHEET_ID` and the `RMA_COUNTERS` KV binding are already set in
@@ -47,6 +52,14 @@ npm run deploy    # ships it to Cloudflare
 ```
 
 ## Endpoints
+
+All endpoints below (except the `OPTIONS` preflight) require a shared
+API key sent as the `X-API-Key` header, checked against the `API_KEY`
+Worker secret. Requests without a matching key get `401 {"error":"Unauthorized"}`.
+
+**GET `/tickets?tab=Open|Closed|Master`** (default `Open`)
+Lists all rows from a tab as JSON objects — powers the Dashboard's
+ticket table. Returns `{ tab, count, tickets }`.
 
 **GET `/device-history?sn=<serial>`**
 Look up prior repair history for a device by serial number (call this
@@ -108,7 +121,7 @@ wait for the actual hourly/5pm schedule. No body required for either.
 
 - CORS is wide open (`*`) for now — tighten `CORS_HEADERS` in
   `src/index.js` to your actual Pages domain once the frontend exists.
-- No auth/access control yet on the Worker endpoints themselves —
-  fine while it's just you testing, but worth adding before the
-  frontend is handed to technicians (e.g. a shared API key header, or
-  Cloudflare Access in front of the whole thing).
+- Auth is a single shared API key for now (see Endpoints above) — fine
+  for one small team on one Worker, but doesn't give per-technician
+  accountability. Cloudflare Access or per-user login are options if
+  that's ever needed.

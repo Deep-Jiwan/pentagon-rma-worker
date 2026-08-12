@@ -7,3 +7,4 @@
 
 GOOGLE_CLIENT_EMAIL="rma-worker@pentagonrma.iam.gserviceaccount.com"
 GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQ...paste the rest...\n-----END PRIVATE KEY-----\n"
+API_KEY="paste-the-shared-frontend-api-key-here"
