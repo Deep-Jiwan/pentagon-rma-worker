@@ -5,9 +5,8 @@ import { HEADERS } from './constants.js';
 import { downloadFile } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
 
-// Tighten this to your Pages domain once it exists (e.g. 'https://pentagon-rma.pages.dev')
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://pentagon-rma-frontend.pentagontz.workers.dev',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
 };
