@@ -2,7 +2,7 @@ import { getAccessToken } from './auth.js';
 import { getRows, appendRow, updateRow, deleteRow, findRowByRmaId } from './sheets.js';
 import { generateRmaId } from './rmaId.js';
 import { HEADERS } from './constants.js';
-import { downloadFile } from './drive.js';
+import { downloadFile } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
 
 // Tighten this to your Pages domain once it exists (e.g. 'https://pentagon-rma.pages.dev')
@@ -76,14 +76,13 @@ export default {
 };
 
 // GET /reports/latest — proxies the most recent daily PDF report from
-// Drive through the Worker, rather than exposing a public Drive link
+// R2 through the Worker, rather than exposing the bucket publicly
 // (the report contains customer names and phone numbers).
 async function handleLatestReport(request, env) {
   const cached = await env.RMA_COUNTERS.get('latest_report', { type: 'json' });
   if (!cached) return json({ error: 'No report generated yet' }, 404);
 
-  const accessToken = await getAccessToken(env);
-  const bytes = await downloadFile(env, accessToken, cached.fileId);
+  const bytes = await downloadFile(env, cached.fileId);
 
   return new Response(bytes, {
     headers: {

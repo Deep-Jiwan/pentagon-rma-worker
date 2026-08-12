@@ -34,11 +34,10 @@ Make sure the sheet is shared with the service account's email as
 **Editor** (done in the earlier step) — otherwise every request will
 fail with a permissions error from the Sheets API.
 
-**Also share the PentagonRMA Drive folder itself** (not just the
-sheet) with the same service account email, as Editor — this is
-needed for the daily report PDF to be saved there. Right-click the
-folder in Drive → Share → paste the `...iam.gserviceaccount.com`
-email → Editor.
+Daily PDF reports are stored in the `RMA_REPORTS` R2 bucket (bound in
+`wrangler.toml`) rather than Google Drive — service accounts have no
+storage quota of their own outside a Google Workspace Shared Drive,
+so Drive isn't used here at all.
 
 ## Run locally / deploy
 
@@ -89,9 +88,9 @@ Master.
 
 **GET `/reports/latest`**
 Downloads the most recent daily report PDF. The Worker fetches it from
-Drive using the service account and streams it back directly — the
-Drive file itself is never made public, since the report contains
-customer names and phone numbers.
+the `RMA_REPORTS` R2 bucket and streams it back directly — the bucket
+itself is never made public, since the report contains customer names
+and phone numbers.
 
 **POST `/admin/run-redflag-scan`** and **POST `/admin/run-daily-report`**
 Manually trigger the CRON logic on demand, for testing — no need to
@@ -103,7 +102,7 @@ wait for the actual hourly/5pm schedule. No body required for either.
   with a Last Edited Timestamp older than 24h, sets Red Flag = Yes.
 - Daily at 14:00 UTC / 17:00 EAT (`0 14 * * *`): builds the PDF report
   (new intakes today, closed today, currently red-flagged) and saves
-  it into the PentagonRMA Drive folder as `RMA-Report-YYYY-MM-DD.pdf`.
+  it into the `RMA_REPORTS` R2 bucket as `RMA-Report-YYYY-MM-DD.pdf`.
 
 ## Still to do
 

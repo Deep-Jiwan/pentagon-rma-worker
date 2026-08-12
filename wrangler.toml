@@ -6,11 +6,16 @@ compatibility_date = "2026-08-01"
 # separately as Worker secrets (see README) — never put those here.
 [vars]
 SPREADSHEET_ID = "1G3R6F0r69F0gjbqKHdmLmyadxsWTU6yeP96LyyEkX_4"
-DRIVE_FOLDER_ID = "1UkuTcU7soS0m8Me3b_zXREAyFK48Q5-v"
 
 [[kv_namespaces]]
 binding = "RMA_COUNTERS"
 id = "20445052a2174b8f80804fb7e189136a"
+
+# Daily PDF reports land here instead of Google Drive — service accounts
+# have no Drive storage quota of their own outside a Workspace Shared Drive.
+[[r2_buckets]]
+binding = "RMA_REPORTS"
+bucket_name = "pentagon-rma-reports"
 
 # Hourly (top of every hour) for the stuck-in-diagnostics red-flag scan,
 # daily at 14:00 UTC (17:00 EAT) for the end-of-day PDF report.

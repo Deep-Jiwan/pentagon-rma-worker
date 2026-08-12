@@ -1,6 +1,6 @@
 import { getAccessToken } from './auth.js';
 import { getRows, updateRow, findRowByRmaId } from './sheets.js';
-import { uploadPdf } from './drive.js';
+import { uploadPdf } from './storage.js';
 import { buildDailyReportPdf } from './pdfReport.js';
 import { HEADERS } from './constants.js';
 import { getEatDateString, getEatDateLabel } from './utils.js';
@@ -56,7 +56,7 @@ function matchesEatDate(isoString, eatDateStr) {
   return getEatDateString(new Date(parsed)) === eatDateStr;
 }
 
-// Daily: build the PDF report and save it into the PentagonRMA Drive folder.
+// Daily: build the PDF report and save it into the RMA_REPORTS R2 bucket.
 export async function runDailyReport(env) {
   const accessToken = await getAccessToken(env);
   const todayStr = getEatDateString();
@@ -80,7 +80,7 @@ export async function runDailyReport(env) {
   });
 
   const filename = `RMA-Report-${todayLabel}.pdf`;
-  const uploaded = await uploadPdf(env, accessToken, filename, pdfBytes);
+  const uploaded = await uploadPdf(env, filename, pdfBytes);
 
   await env.RMA_COUNTERS.put('latest_report', JSON.stringify({
     date: todayLabel,
