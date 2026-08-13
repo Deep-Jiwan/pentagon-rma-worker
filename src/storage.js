@@ -19,3 +19,9 @@ export async function downloadFile(env, fileId) {
   if (!obj) throw new Error(`Report not found in R2: ${fileId}`);
   return obj.arrayBuffer();
 }
+
+// R2 delete is a no-op if the key doesn't exist (no error either way) —
+// safe to call even when there was never a saved PDF for this ticket.
+export async function deleteFile(env, filename) {
+  await env.RMA_REPORTS.delete(filename);
+}

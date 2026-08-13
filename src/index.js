@@ -2,12 +2,12 @@ import { getAccessToken } from './auth.js';
 import { getRows, appendRow, updateRow, deleteRow, findRowByRmaId } from './sheets.js';
 import { generateRmaId } from './rmaId.js';
 import { HEADERS } from './constants.js';
-import { downloadFile, uploadPdf } from './storage.js';
+import { downloadFile, uploadPdf, deleteFile } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': 'https://pentagon-rma-frontend.pentagontz.workers.dev',
-  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
 };
 
@@ -78,6 +78,10 @@ export default {
       }
       if (pdfMatch && request.method === 'GET') {
         return await handleDownloadTicketPdf(env, decodeURIComponent(pdfMatch[1]));
+      }
+      const ticketMatch = url.pathname.match(/^\/tickets\/([^/]+)$/);
+      if (ticketMatch && request.method === 'DELETE') {
+        return await handleDeleteTicket(env, decodeURIComponent(ticketMatch[1]));
       }
       // Manual triggers for testing the CRON logic without waiting for the schedule.
       if (url.pathname === '/admin/run-redflag-scan' && request.method === 'POST') {
@@ -157,6 +161,37 @@ async function handleDownloadTicketPdf(env, rmaId) {
       ...CORS_HEADERS
     }
   });
+}
+
+// DELETE /tickets/:rmaId — permanently removes a ticket from every tab it
+// appears in (Open or Closed, whichever it's currently in, plus its
+// Master mirror), and best-effort cleans up its saved PDF from R2. This
+// is a hard delete with no undo — the frontend is expected to confirm
+// with the user before calling it.
+async function handleDeleteTicket(env, rmaId) {
+  const accessToken = await getAccessToken(env);
+  let deletedFromAnyTab = false;
+
+  for (const tab of ['Open', 'Closed', 'Master']) {
+    const found = await findRowByRmaId(env, accessToken, tab, rmaId);
+    if (found) {
+      await deleteRow(env, accessToken, tab, found.sheetRowNumber);
+      deletedFromAnyTab = true;
+    }
+  }
+
+  if (!deletedFromAnyTab) {
+    return json({ error: `RMA ID ${rmaId} not found` }, 404);
+  }
+
+  try {
+    await deleteFile(env, `${rmaId}.pdf`);
+  } catch {
+    // Best-effort — a missing/failed R2 cleanup shouldn't undo the fact
+    // the ticket itself was already deleted from the Sheet.
+  }
+
+  return json({ rmaId, deleted: true });
 }
 
 // GET /tickets?tab=Open|Closed|Master (default Open)

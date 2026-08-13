@@ -119,6 +119,12 @@ Fetches a previously-saved ticket PDF back out of R2 (e.g. to
 reprint/redownload later without regenerating it client-side). `404` if
 none was ever saved for that RMA ID.
 
+**DELETE `/tickets/:rmaId`**
+Permanently deletes a ticket from every tab it's in (Open or Closed,
+whichever it's currently in, plus its Master mirror) and best-effort
+cleans up its saved PDF from R2. Hard delete, no undo — the frontend
+confirms with the user before calling this.
+
 **POST `/admin/run-redflag-scan`** and **POST `/admin/run-daily-report`**
 Manually trigger the CRON logic on demand, for testing — no need to
 wait for the actual hourly/5pm schedule. No body required for either.
