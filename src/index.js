@@ -2,7 +2,7 @@ import { getAccessToken } from './auth.js';
 import { getRows, appendRow, updateRow, deleteRow, findRowByRmaId } from './sheets.js';
 import { generateRmaId } from './rmaId.js';
 import { HEADERS } from './constants.js';
-import { downloadFile } from './storage.js';
+import { downloadFile, uploadPdf } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
 
 const CORS_HEADERS = {
@@ -72,6 +72,13 @@ export default {
       if (url.pathname === '/reports/latest' && request.method === 'GET') {
         return await handleLatestReport(request, env);
       }
+      const pdfMatch = url.pathname.match(/^\/tickets\/([^/]+)\/pdf$/);
+      if (pdfMatch && request.method === 'POST') {
+        return await handleUploadTicketPdf(request, env, decodeURIComponent(pdfMatch[1]));
+      }
+      if (pdfMatch && request.method === 'GET') {
+        return await handleDownloadTicketPdf(env, decodeURIComponent(pdfMatch[1]));
+      }
       // Manual triggers for testing the CRON logic without waiting for the schedule.
       if (url.pathname === '/admin/run-redflag-scan' && request.method === 'POST') {
         return json(await runRedFlagScan(env));
@@ -107,6 +114,46 @@ async function handleLatestReport(request, env) {
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${cached.filename}"`,
+      ...CORS_HEADERS
+    }
+  });
+}
+
+// POST /tickets/:rmaId/pdf — stores the RMA/warranty-form PDF into the
+// RMA_REPORTS R2 bucket as "<rmaId>.pdf". The PDF itself is built once,
+// client-side (frontend's lib/pdf.ts, via jsPDF) and posted here as raw
+// bytes — the Worker doesn't regenerate it, so the form layout only lives
+// in one place. Google Drive isn't used here for the same reason the daily
+// reports aren't: this service account has no Drive storage quota outside
+// a Workspace Shared Drive.
+async function handleUploadTicketPdf(request, env, rmaId) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!contentType.includes('application/pdf')) {
+    return json({ error: 'Content-Type must be application/pdf' }, 400);
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) return json({ error: 'Empty PDF body' }, 400);
+
+  const filename = `${rmaId}.pdf`;
+  await uploadPdf(env, filename, bytes);
+  return json({ rmaId, filename });
+}
+
+// GET /tickets/:rmaId/pdf — fetches a previously-saved ticket PDF back out
+// of R2 (e.g. to reprint/redownload without regenerating client-side).
+async function handleDownloadTicketPdf(env, rmaId) {
+  const filename = `${rmaId}.pdf`;
+  let bytes;
+  try {
+    bytes = await downloadFile(env, filename);
+  } catch {
+    return json({ error: `No saved PDF found for ${rmaId}` }, 404);
+  }
+
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
       ...CORS_HEADERS
     }
   });

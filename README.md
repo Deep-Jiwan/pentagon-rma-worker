@@ -105,6 +105,20 @@ the `RMA_REPORTS` R2 bucket and streams it back directly — the bucket
 itself is never made public, since the report contains customer names
 and phone numbers.
 
+**POST `/tickets/:rmaId/pdf`**
+Body is the raw PDF bytes (`Content-Type: application/pdf`), stored into
+`RMA_REPORTS` as `<rmaId>.pdf`. The frontend generates this PDF itself
+(via jsPDF, see its `lib/pdf.ts`) right after intake and posts it here as
+a backup copy — the Worker never regenerates the form layout, so it only
+lives in one place. Not Google Drive, for the same reason as the daily
+report: this service account has no Drive storage quota outside a
+Workspace Shared Drive.
+
+**GET `/tickets/:rmaId/pdf`**
+Fetches a previously-saved ticket PDF back out of R2 (e.g. to
+reprint/redownload later without regenerating it client-side). `404` if
+none was ever saved for that RMA ID.
+
 **POST `/admin/run-redflag-scan`** and **POST `/admin/run-daily-report`**
 Manually trigger the CRON logic on demand, for testing — no need to
 wait for the actual hourly/5pm schedule. No body required for either.
