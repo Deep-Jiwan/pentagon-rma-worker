@@ -139,8 +139,8 @@ wait for the actual hourly/5pm schedule. No body required for either.
 
 ## Still to do
 
-- CORS is wide open (`*`) for now — tighten `CORS_HEADERS` in
-  `src/index.js` to your actual Pages domain once the frontend exists.
+- CORS is locked to specific origins via the `ALLOWED_ORIGINS` list in
+  `src/index.js` — add any new frontend domain there.
 - Auth is a single shared API key for now (see Endpoints above) — fine
   for one small team on one Worker, but doesn't give per-technician
   accountability. Cloudflare Access or per-user login are options if

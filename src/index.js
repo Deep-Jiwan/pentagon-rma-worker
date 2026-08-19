@@ -5,16 +5,29 @@ import { HEADERS } from './constants.js';
 import { downloadFile, uploadPdf, deleteFile } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': 'https://pentagon-rma-frontend.pentagontz.workers.dev',
-  'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
-};
+// Origins allowed to call this Worker from a browser. Access-Control-Allow-Origin
+// can only ever hold one value, so we reflect back whichever of these matched
+// the request's Origin header (falling back to the first entry for non-browser
+// callers, e.g. curl, that send no Origin at all).
+const ALLOWED_ORIGINS = [
+  'https://pentagon-rma-frontend.pentagontz.workers.dev',
+  'https://rma.pentagon-solutions.tech'
+];
 
-function json(data, status = 200) {
+function corsHeaders(request) {
+  const origin = request?.headers.get('Origin');
+  const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
+  };
+}
+
+function json(data, status = 200, request) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(request) }
   });
 }
 
@@ -41,14 +54,14 @@ function objectToRow(obj) {
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: CORS_HEADERS });
+      return new Response(null, { headers: corsHeaders(request) });
     }
 
     // Shared API key required on every route below. Frontend sends it as
     // X-API-Key. env.API_KEY is a Worker secret — see README.
     const providedKey = request.headers.get('X-API-Key') || '';
     if (!env.API_KEY || !safeEqual(providedKey, env.API_KEY)) {
-      return json({ error: 'Unauthorized' }, 401);
+      return json({ error: 'Unauthorized' }, 401, request);
     }
 
     const url = new URL(request.url);
@@ -77,22 +90,22 @@ export default {
         return await handleUploadTicketPdf(request, env, decodeURIComponent(pdfMatch[1]));
       }
       if (pdfMatch && request.method === 'GET') {
-        return await handleDownloadTicketPdf(env, decodeURIComponent(pdfMatch[1]));
+        return await handleDownloadTicketPdf(request, env, decodeURIComponent(pdfMatch[1]));
       }
       const ticketMatch = url.pathname.match(/^\/tickets\/([^/]+)$/);
       if (ticketMatch && request.method === 'DELETE') {
-        return await handleDeleteTicket(env, decodeURIComponent(ticketMatch[1]));
+        return await handleDeleteTicket(request, env, decodeURIComponent(ticketMatch[1]));
       }
       // Manual triggers for testing the CRON logic without waiting for the schedule.
       if (url.pathname === '/admin/run-redflag-scan' && request.method === 'POST') {
-        return json(await runRedFlagScan(env));
+        return json(await runRedFlagScan(env), 200, request);
       }
       if (url.pathname === '/admin/run-daily-report' && request.method === 'POST') {
-        return json(await runDailyReport(env));
+        return json(await runDailyReport(env), 200, request);
       }
-      return json({ error: 'Not found' }, 404);
+      return json({ error: 'Not found' }, 404, request);
     } catch (err) {
-      return json({ error: err.message }, 500);
+      return json({ error: err.message }, 500, request);
     }
   },
 
@@ -110,7 +123,7 @@ export default {
 // (the report contains customer names and phone numbers).
 async function handleLatestReport(request, env) {
   const cached = await env.RMA_COUNTERS.get('latest_report', { type: 'json' });
-  if (!cached) return json({ error: 'No report generated yet' }, 404);
+  if (!cached) return json({ error: 'No report generated yet' }, 404, request);
 
   const bytes = await downloadFile(env, cached.fileId);
 
@@ -118,7 +131,7 @@ async function handleLatestReport(request, env) {
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${cached.filename}"`,
-      ...CORS_HEADERS
+      ...corsHeaders(request)
     }
   });
 }
@@ -133,32 +146,32 @@ async function handleLatestReport(request, env) {
 async function handleUploadTicketPdf(request, env, rmaId) {
   const contentType = request.headers.get('Content-Type') || '';
   if (!contentType.includes('application/pdf')) {
-    return json({ error: 'Content-Type must be application/pdf' }, 400);
+    return json({ error: 'Content-Type must be application/pdf' }, 400, request);
   }
   const bytes = await request.arrayBuffer();
-  if (bytes.byteLength === 0) return json({ error: 'Empty PDF body' }, 400);
+  if (bytes.byteLength === 0) return json({ error: 'Empty PDF body' }, 400, request);
 
   const filename = `${rmaId}.pdf`;
   await uploadPdf(env, filename, bytes);
-  return json({ rmaId, filename });
+  return json({ rmaId, filename }, 200, request);
 }
 
 // GET /tickets/:rmaId/pdf — fetches a previously-saved ticket PDF back out
 // of R2 (e.g. to reprint/redownload without regenerating client-side).
-async function handleDownloadTicketPdf(env, rmaId) {
+async function handleDownloadTicketPdf(request, env, rmaId) {
   const filename = `${rmaId}.pdf`;
   let bytes;
   try {
     bytes = await downloadFile(env, filename);
   } catch {
-    return json({ error: `No saved PDF found for ${rmaId}` }, 404);
+    return json({ error: `No saved PDF found for ${rmaId}` }, 404, request);
   }
 
   return new Response(bytes, {
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${filename}"`,
-      ...CORS_HEADERS
+      ...corsHeaders(request)
     }
   });
 }
@@ -168,7 +181,7 @@ async function handleDownloadTicketPdf(env, rmaId) {
 // Master mirror), and best-effort cleans up its saved PDF from R2. This
 // is a hard delete with no undo — the frontend is expected to confirm
 // with the user before calling it.
-async function handleDeleteTicket(env, rmaId) {
+async function handleDeleteTicket(request, env, rmaId) {
   const accessToken = await getAccessToken(env);
   let deletedFromAnyTab = false;
 
@@ -181,7 +194,7 @@ async function handleDeleteTicket(env, rmaId) {
   }
 
   if (!deletedFromAnyTab) {
-    return json({ error: `RMA ID ${rmaId} not found` }, 404);
+    return json({ error: `RMA ID ${rmaId} not found` }, 404, request);
   }
 
   try {
@@ -191,7 +204,7 @@ async function handleDeleteTicket(env, rmaId) {
     // the ticket itself was already deleted from the Sheet.
   }
 
-  return json({ rmaId, deleted: true });
+  return json({ rmaId, deleted: true }, 200, request);
 }
 
 // GET /tickets?tab=Open|Closed|Master (default Open)
@@ -201,14 +214,14 @@ async function handleTickets(request, env) {
   const url = new URL(request.url);
   const tab = url.searchParams.get('tab') || 'Open';
   if (!['Open', 'Closed', 'Master'].includes(tab)) {
-    return json({ error: 'tab must be one of Open, Closed, Master' }, 400);
+    return json({ error: 'tab must be one of Open, Closed, Master' }, 400, request);
   }
 
   const accessToken = await getAccessToken(env);
   const rows = await getRows(env, accessToken, tab);
   const tickets = rows.map(rowToObject);
 
-  return json({ tab, count: tickets.length, tickets });
+  return json({ tab, count: tickets.length, tickets }, 200, request);
 }
 
 // GET /device-history?sn=XXXX
@@ -218,7 +231,7 @@ async function handleTickets(request, env) {
 async function handleDeviceHistory(request, env) {
   const url = new URL(request.url);
   const sn = url.searchParams.get('sn');
-  if (!sn) return json({ error: 'sn query param required' }, 400);
+  if (!sn) return json({ error: 'sn query param required' }, 400, request);
 
   const accessToken = await getAccessToken(env);
   const rows = await getRows(env, accessToken, 'Master');
@@ -226,7 +239,7 @@ async function handleDeviceHistory(request, env) {
     .filter(r => r[1] === sn) // column B = SN
     .map(rowToObject);
 
-  return json({ sn, priorRepairs });
+  return json({ sn, priorRepairs }, 200, request);
 }
 
 // POST /intake — creates a new ticket in Open + Master
@@ -235,7 +248,7 @@ async function handleIntake(request, env) {
 
   const required = ['sn', 'customerName', 'mobileNumber', 'modelNumber', 'productType', 'brand', 'problemDescription', 'warrantyStatus'];
   for (const field of required) {
-    if (!body[field]) return json({ error: `Missing field: ${field}` }, 400);
+    if (!body[field]) return json({ error: `Missing field: ${field}` }, 400, request);
   }
 
   const accessToken = await getAccessToken(env);
@@ -272,17 +285,17 @@ async function handleIntake(request, env) {
   await appendRow(env, accessToken, 'Open', row);
   await appendRow(env, accessToken, 'Master', row);
 
-  return json({ rmaId, record });
+  return json({ rmaId, record }, 200, request);
 }
 
 // POST /update — technician progress: diagnostics -> estimate -> repair -> ready
 async function handleUpdate(request, env) {
   const body = await request.json();
-  if (!body.rmaId) return json({ error: 'rmaId required' }, 400);
+  if (!body.rmaId) return json({ error: 'rmaId required' }, 400, request);
 
   const accessToken = await getAccessToken(env);
   const found = await findRowByRmaId(env, accessToken, 'Open', body.rmaId);
-  if (!found) return json({ error: `RMA ID ${body.rmaId} not found in Open` }, 404);
+  if (!found) return json({ error: `RMA ID ${body.rmaId} not found in Open` }, 404, request);
 
   const record = rowToObject(found.values);
   const now = new Date().toISOString();
@@ -308,18 +321,18 @@ async function handleUpdate(request, env) {
     await updateRow(env, accessToken, 'Master', masterFound.sheetRowNumber, updatedRow);
   }
 
-  return json({ rmaId: body.rmaId, record });
+  return json({ rmaId: body.rmaId, record }, 200, request);
 }
 
 // POST /return — customer collection: move Open -> Closed, mirror final state into Master
 async function handleReturn(request, env) {
   const body = await request.json();
-  if (!body.rmaId) return json({ error: 'rmaId required' }, 400);
-  if (!body.collectedByName) return json({ error: 'collectedByName required' }, 400);
+  if (!body.rmaId) return json({ error: 'rmaId required' }, 400, request);
+  if (!body.collectedByName) return json({ error: 'collectedByName required' }, 400, request);
 
   const accessToken = await getAccessToken(env);
   const found = await findRowByRmaId(env, accessToken, 'Open', body.rmaId);
-  if (!found) return json({ error: `RMA ID ${body.rmaId} not found in Open` }, 404);
+  if (!found) return json({ error: `RMA ID ${body.rmaId} not found in Open` }, 404, request);
 
   const record = rowToObject(found.values);
   const now = new Date().toISOString();
@@ -340,5 +353,5 @@ async function handleReturn(request, env) {
     await updateRow(env, accessToken, 'Master', masterFound.sheetRowNumber, finalRow);
   }
 
-  return json({ rmaId: body.rmaId, record });
+  return json({ rmaId: body.rmaId, record }, 200, request);
 }
