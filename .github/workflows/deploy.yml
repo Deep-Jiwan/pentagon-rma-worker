@@ -1,0 +1,48 @@
+# Ships the Worker to Cloudflare on every push to main, gating the deploy
+# behind the test suite — the README calls that out as the check that would
+# have caught PR #2's silent regression, so it runs here rather than relying
+# on whoever pushes to remember.
+#
+# Needs one repository secret: CLOUDFLARE_API_TOKEN (Workers Scripts: Edit,
+# plus Workers R2 Storage + Workers KV Storage read for the bindings in
+# wrangler.toml). CLOUDFLARE_ACCOUNT_ID is only needed if the token can see
+# more than one account.
+#
+# This deploys code only. The Worker secrets (GOOGLE_CLIENT_EMAIL,
+# GOOGLE_PRIVATE_KEY, API_KEY) live in Cloudflare and are set with
+# `wrangler secret put` — `wrangler deploy` leaves them untouched, so they
+# never need to exist in GitHub.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time: two overlapping runs would race to publish, and the
+# loser's version could end up live.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Deploy to Cloudflare
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
