@@ -99,11 +99,14 @@ Any of `status`, `resolution`, `repairDetails`, `technicianName`,
 Moves the ticket from Open to Closed and mirrors the final state into
 Master.
 
-**GET `/reports/latest`**
-Downloads the most recent daily report PDF. The Worker fetches it from
-the `RMA_REPORTS` R2 bucket and streams it back directly — the bucket
-itself is never made public, since the report contains customer names
-and phone numbers.
+**POST `/reports/generate`**
+Builds the status report fresh from the sheet's *current* state (not a
+cached daily snapshot) — KPI totals, status/warranty/brand breakdowns,
+red-flagged list, oldest-backlog, average turnaround — saves it into the
+`RMA_REPORTS` R2 bucket as `RMA-Report-Latest.pdf`, and streams it back
+directly. The bucket itself is never made public, since the report
+contains customer names and phone numbers. The daily CRON report below
+is unaffected — it still runs on schedule and keeps its own dated copies.
 
 **POST `/tickets/:rmaId/pdf`**
 Body is the raw PDF bytes (`Content-Type: application/pdf`), stored into
@@ -120,10 +123,12 @@ reprint/redownload later without regenerating it client-side). `404` if
 none was ever saved for that RMA ID.
 
 **DELETE `/tickets/:rmaId`**
-Permanently deletes a ticket from every tab it's in (Open or Closed,
-whichever it's currently in, plus its Master mirror) and best-effort
-cleans up its saved PDF from R2. Hard delete, no undo — the frontend
-confirms with the user before calling this.
+Permanently deletes a ticket from Open or Closed (whichever it's
+currently in) and best-effort cleans up its saved PDF from R2. Hard
+delete, no undo on those two tabs — the frontend confirms with the user
+before calling this. Master is never pruned: it's the permanent record
+of every RMA that's ever existed, so the Master row is left in place and
+its Status marked `Deleted (was: ...)` instead of being removed.
 
 **POST `/admin/run-redflag-scan`** and **POST `/admin/run-daily-report`**
 Manually trigger the CRON logic on demand, for testing — no need to
@@ -133,14 +138,15 @@ wait for the actual hourly/5pm schedule. No body required for either.
 
 - Hourly (`0 * * * *`): scans Open for tickets still in Diagnostics
   with a Last Edited Timestamp older than 24h, sets Red Flag = Yes.
-- Daily at 14:00 UTC / 17:00 EAT (`0 14 * * *`): builds the PDF report
-  (new intakes today, closed today, currently red-flagged) and saves
-  it into the `RMA_REPORTS` R2 bucket as `RMA-Report-YYYY-MM-DD.pdf`.
+- Daily at 14:00 UTC / 17:00 EAT (`0 14 * * *`): builds the same status
+  report as `POST /reports/generate` (see Endpoints above) and saves it
+  into the `RMA_REPORTS` R2 bucket as `RMA-Report-YYYY-MM-DD.pdf`, for
+  a dated archive.
 
 ## Still to do
 
-- CORS is wide open (`*`) for now — tighten `CORS_HEADERS` in
-  `src/index.js` to your actual Pages domain once the frontend exists.
+- CORS is locked to specific origins via the `ALLOWED_ORIGINS` list in
+  `src/index.js` — add any new frontend domain there.
 - Auth is a single shared API key for now (see Endpoints above) — fine
   for one small team on one Worker, but doesn't give per-technician
   accountability. Cloudflare Access or per-user login are options if

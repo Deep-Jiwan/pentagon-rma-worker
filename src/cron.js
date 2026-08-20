@@ -1,9 +1,9 @@
 import { getAccessToken } from './auth.js';
 import { getRows, updateRow, findRowByRmaId } from './sheets.js';
 import { uploadPdf } from './storage.js';
-import { buildDailyReportPdf } from './pdfReport.js';
+import { buildReportPdf } from './pdfReport.js';
+import { computeReportMetrics } from './reportData.js';
 import { HEADERS } from './constants.js';
-import { getEatDateString, getEatDateLabel } from './utils.js';
 
 function rowToObject(row) {
   const obj = {};
@@ -49,41 +49,21 @@ export async function runRedFlagScan(env) {
   return { scanned: rows.length, flagged };
 }
 
-function matchesEatDate(isoString, eatDateStr) {
-  if (!isoString) return false;
-  const parsed = Date.parse(isoString);
-  if (!parsed) return false;
-  return getEatDateString(new Date(parsed)) === eatDateStr;
-}
-
-// Daily: build the PDF report and save it into the RMA_REPORTS R2 bucket.
+// Daily: snapshot the current sheet state, build the PDF report, and save
+// it into the RMA_REPORTS R2 bucket for archival. This uses the exact same
+// computeReportMetrics()/buildReportPdf() pipeline as the on-demand
+// POST /reports/generate endpoint (see index.js) — the only difference is this
+// one is triggered by the CRON schedule and keeps a dated copy in R2 rather
+// than streaming straight back to a caller.
 export async function runDailyReport(env) {
-  const accessToken = await getAccessToken(env);
-  const todayStr = getEatDateString();
-  const todayLabel = getEatDateLabel();
+  const metrics = await computeReportMetrics(env);
+  const pdfBytes = await buildReportPdf(metrics);
 
-  const openRows = (await getRows(env, accessToken, 'Open')).map(rowToObject);
-  const closedRows = (await getRows(env, accessToken, 'Closed')).map(rowToObject);
-
-  const inToday = [...openRows, ...closedRows].filter(r => matchesEatDate(r['Date In'], todayStr));
-  const closedToday = closedRows.filter(r => matchesEatDate(r['Date Out'], todayStr));
-  const redFlagged = openRows.filter(r => r['Red Flag'] === 'Yes');
-
-  const pdfBytes = await buildDailyReportPdf({
-    dateLabel: todayLabel,
-    devicesIn: inToday.length,
-    devicesClosed: closedToday.length,
-    redFlagCount: redFlagged.length,
-    inToday,
-    closedToday,
-    redFlagged
-  });
-
-  const filename = `RMA-Report-${todayLabel}.pdf`;
+  const filename = `RMA-Report-${metrics.generatedAtLabel}.pdf`;
   const uploaded = await uploadPdf(env, filename, pdfBytes);
 
   await env.RMA_COUNTERS.put('latest_report', JSON.stringify({
-    date: todayLabel,
+    date: metrics.generatedAtLabel,
     fileId: uploaded.id,
     filename
   }));
@@ -91,8 +71,8 @@ export async function runDailyReport(env) {
   return {
     filename,
     fileId: uploaded.id,
-    devicesIn: inToday.length,
-    devicesClosed: closedToday.length,
-    redFlags: redFlagged.length
+    devicesIn: metrics.totals.devicesInToday,
+    devicesClosed: metrics.totals.devicesClosedToday,
+    redFlags: metrics.totals.redFlagged
   };
 }
