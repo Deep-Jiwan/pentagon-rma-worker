@@ -2,9 +2,16 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 const PAGE_WIDTH = 612; // US Letter
 const PAGE_HEIGHT = 792;
-const MARGIN = 40;
+const MARGIN = 48;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
-const FOOTER_RESERVE = 34;
+const FOOTER_RESERVE = 40;
+
+const HEADER_H = 92; // full-bleed masthead, page 1 only
+const CONT_HEADER_H = 40; // slim "continued" strip on pages 2+
+const SECTION_GAP = 28; // breathing room above a section heading
+const HEADING_TO_BODY = 18; // heading rule -> first row of content
+const ROW_H = 19; // table row pitch
+const BAR_ROW_H = 24; // bar chart row pitch
 
 function hex(h) {
   const n = parseInt(h.replace('#', ''), 16);
@@ -36,11 +43,21 @@ function truncate(str, len) {
   return str.length > len ? str.slice(0, len - 1) + '…' : str;
 }
 
+function plural(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 // Builds the branded, on-demand daily report PDF from a computeReportMetrics()
 // snapshot — a single day's operational snapshot (devices in, devices out,
 // current open/red-flag counts), not a historical analysis. Drawn with
 // pdf-lib's vector primitives since Workers has no canvas/rasterizer to lean
 // on for charts.
+//
+// Layout convention: `y` is the *top edge* of whatever gets drawn next, and
+// every draw helper leaves it at the bottom edge of what it drew. Vertical
+// rhythm comes from the SECTION_GAP / HEADING_TO_BODY / ROW_H constants above
+// rather than ad-hoc nudges, so sections never end up jammed against the
+// content before them.
 export async function buildReportPdf(metrics) {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -49,65 +66,95 @@ export async function buildReportPdf(metrics) {
   let page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   let y = PAGE_HEIGHT - MARGIN;
 
-  function addPage() {
-    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    y = PAGE_HEIGHT - MARGIN;
-  }
-
-  function ensureSpace(h) {
-    if (y - h < MARGIN + FOOTER_RESERVE) addPage();
-  }
-
   function text(str, x, yy, { size = 10, f = font, color = COLORS.ink } = {}) {
     page.drawText(str || '', { x, y: yy, size, font: f, color });
   }
 
-  function sectionTitle(str) {
-    ensureSpace(24);
-    text(str, MARGIN, y, { size: 12.5, f: bold, color: COLORS.ink });
-    y -= 8;
-    page.drawLine({
-      start: { x: MARGIN, y },
-      end: { x: PAGE_WIDTH - MARGIN, y },
-      thickness: 1,
-      color: COLORS.line
-    });
-    y -= 14;
+  function textRight(str, right, yy, { size = 10, f = font, color = COLORS.ink } = {}) {
+    text(str, right - f.widthOfTextAtSize(str || '', size), yy, { size, f, color });
   }
 
-  // --- Header (page 1 only) --------------------------------------------
-  function drawHeader() {
-    page.drawRectangle({ x: 0, y: PAGE_HEIGHT - 78, width: PAGE_WIDTH, height: 78, color: COLORS.ink });
-    text('Pentagon Solutions', MARGIN, PAGE_HEIGHT - 34, { size: 18, f: bold, color: COLORS.white });
-    text('Daily RMA Report', MARGIN, PAGE_HEIGHT - 54, { size: 11, f: font, color: hex('#cbd5e1') });
-    const genLine = `Generated ${metrics.generatedAtIso.slice(0, 16).replace('T', ' ')} UTC`;
-    const genWidth = font.widthOfTextAtSize(genLine, 9);
-    text(genLine, PAGE_WIDTH - MARGIN - genWidth, PAGE_HEIGHT - 34, { size: 9, f: font, color: hex('#cbd5e1') });
-    const dateWidth = bold.widthOfTextAtSize(metrics.generatedAtLabel, 11);
-    text(metrics.generatedAtLabel, PAGE_WIDTH - MARGIN - dateWidth, PAGE_HEIGHT - 54, { size: 11, f: bold, color: COLORS.white });
-    y = PAGE_HEIGHT - 78 - 24;
+  function rule(yy, { color = COLORS.line, thickness = 1, x1 = MARGIN, x2 = PAGE_WIDTH - MARGIN } = {}) {
+    page.drawLine({ start: { x: x1, y: yy }, end: { x: x2, y: yy }, thickness, color });
   }
-  drawHeader();
+
+  // Pages 2+ get a slim restatement of what this document is, so a printed
+  // page that outlived the stack still identifies itself.
+  function addPage() {
+    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    y = PAGE_HEIGHT - MARGIN;
+    text('Daily RMA Report', MARGIN, y - 9, { size: 9, f: bold, color: COLORS.sub });
+    textRight(metrics.generatedAtLabel, PAGE_WIDTH - MARGIN, y - 9, { size: 9, color: COLORS.faint });
+    rule(y - 18, { color: COLORS.line });
+    y -= CONT_HEADER_H;
+  }
+
+  function ensureSpace(h) {
+    if (y - h < MARGIN + FOOTER_RESERVE) {
+      addPage();
+      return true;
+    }
+    return false;
+  }
+
+  // --- Masthead (page 1 only) ------------------------------------------
+  function drawMasthead() {
+    page.drawRectangle({ x: 0, y: PAGE_HEIGHT - HEADER_H, width: PAGE_WIDTH, height: HEADER_H, color: COLORS.ink });
+    page.drawRectangle({ x: 0, y: PAGE_HEIGHT - HEADER_H, width: PAGE_WIDTH, height: 3, color: COLORS.blue });
+
+    text('Pentagon Solutions', MARGIN, PAGE_HEIGHT - 44, { size: 19, f: bold, color: COLORS.white });
+    text('Daily RMA Report', MARGIN, PAGE_HEIGHT - 64, { size: 10.5, color: hex('#94a3b8') });
+
+    textRight(metrics.generatedAtLabel, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 44, { size: 12, f: bold, color: COLORS.white });
+    const genLine = `Generated ${metrics.generatedAtIso.slice(0, 16).replace('T', ' ')} UTC`;
+    textRight(genLine, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 64, { size: 8.5, color: hex('#94a3b8') });
+
+    y = PAGE_HEIGHT - HEADER_H - 32;
+  }
+  drawMasthead();
+
+  // --- Section heading --------------------------------------------------
+  // `caption` is the right-hand row count — it turns a bare heading into a
+  // summary line, so an empty section reads as "0 devices" rather than as a
+  // heading that looks like it failed to render.
+  function sectionTitle(str, caption) {
+    // Reserve the heading plus a first row, so a heading never strands
+    // itself at the foot of a page. A fresh page already has its own top
+    // spacing, so only pay SECTION_GAP when we stayed put.
+    const broke = ensureSpace(SECTION_GAP + HEADING_TO_BODY + ROW_H * 2);
+    if (!broke) y -= SECTION_GAP;
+
+    text(str, MARGIN, y - 10, { size: 12, f: bold, color: COLORS.ink });
+    if (caption) textRight(caption, PAGE_WIDTH - MARGIN, y - 9, { size: 8.5, color: COLORS.faint });
+    y -= 18;
+    rule(y);
+    y -= HEADING_TO_BODY;
+  }
+
+  function emptyNote(str) {
+    text(str, MARGIN, y - 12, { size: 9, color: COLORS.faint });
+    y -= ROW_H + 4;
+  }
 
   // --- KPI cards ----------------------------------------------------------
   function kpiCards(cards) {
-    const gap = 10;
+    const gap = 12;
     const w = (CONTENT_WIDTH - gap * (cards.length - 1)) / cards.length;
-    const h = 58;
-    ensureSpace(h + 18);
+    const h = 74;
+    ensureSpace(h);
     cards.forEach((c, i) => {
       const x = MARGIN + i * (w + gap);
       page.drawRectangle({ x, y: y - h, width: w, height: h, color: c.soft, borderColor: COLORS.line, borderWidth: 1 });
       page.drawRectangle({ x, y: y - 4, width: w, height: 4, color: c.accent });
+
       const valueStr = String(c.value);
-      const valueSize = 20;
-      const valueWidth = bold.widthOfTextAtSize(valueStr, valueSize);
-      text(valueStr, x + (w - valueWidth) / 2, y - 32, { size: valueSize, f: bold, color: c.accent });
-      const labelSize = 7.5;
-      const labelWidth = font.widthOfTextAtSize(c.label, labelSize);
-      text(c.label, x + (w - labelWidth) / 2, y - h + 10, { size: labelSize, f: font, color: COLORS.sub });
+      const valueWidth = bold.widthOfTextAtSize(valueStr, 24);
+      text(valueStr, x + (w - valueWidth) / 2, y - 44, { size: 24, f: bold, color: c.accent });
+
+      const labelWidth = font.widthOfTextAtSize(c.label, 7.5);
+      text(c.label, x + (w - labelWidth) / 2, y - h + 16, { size: 7.5, color: COLORS.sub });
     });
-    y -= h + 18;
+    y -= h;
   }
 
   const t = metrics.totals;
@@ -119,113 +166,142 @@ export async function buildReportPdf(metrics) {
   ]);
 
   // --- Horizontal bar chart -------------------------------------------
-  function barChart(title, data, { emptyLabel = 'No data' } = {}) {
-    sectionTitle(title);
+  function barChart(title, data, { emptyLabel = 'No open tickets to break down.' } = {}) {
+    sectionTitle(title, data.length ? plural(data.length, 'status', 'statuses') : undefined);
     if (data.length === 0) {
-      text(emptyLabel, MARGIN, y, { size: 9.5, color: COLORS.faint });
-      y -= 20;
+      emptyNote(emptyLabel);
       return;
     }
-    const rowH = 20;
-    const chartH = data.length * rowH + 6;
-    ensureSpace(chartH);
-    const labelW = 130;
-    const valueW = 60;
+    const labelW = 150;
+    const valueW = 34;
     const barAreaW = CONTENT_WIDTH - labelW - valueW;
     const max = Math.max(...data.map(([, v]) => v), 1);
 
     data.forEach(([label, value], i) => {
-      const rowY = y - i * rowH;
+      const pageBefore = page;
+      ensureSpace(BAR_ROW_H);
+      if (page !== pageBefore && i > 0) {
+        // Rows that spill onto a new page keep their heading context.
+        text(`${title} (continued)`, MARGIN, y - 10, { size: 9, f: bold, color: COLORS.faint });
+        y -= 22;
+      }
       const barW = Math.max(2, (value / max) * barAreaW);
       const color = SERIES_PALETTE[i % SERIES_PALETTE.length];
-      text(truncate(label, 22), MARGIN, rowY - 13, { size: 9, color: COLORS.sub });
-      page.drawRectangle({ x: MARGIN + labelW, y: rowY - 15, width: barAreaW, height: 11, color: COLORS.panel });
-      page.drawRectangle({ x: MARGIN + labelW, y: rowY - 15, width: barW, height: 11, color });
-      text(`${value}`, MARGIN + labelW + barAreaW + 8, rowY - 13, { size: 9, f: bold, color: COLORS.ink });
+      text(truncate(label, 26), MARGIN, y - 15, { size: 9, color: COLORS.sub });
+      page.drawRectangle({ x: MARGIN + labelW, y: y - 18, width: barAreaW, height: 12, color: COLORS.panel });
+      page.drawRectangle({ x: MARGIN + labelW, y: y - 18, width: barW, height: 12, color });
+      textRight(String(value), PAGE_WIDTH - MARGIN, y - 15, { size: 9, f: bold, color: COLORS.ink });
+      y -= BAR_ROW_H;
     });
-    y -= chartH + 12;
+    y -= 4;
   }
 
-  barChart('Open Ticket Status Breakdown (current)', metrics.statusCounts);
+  barChart('Open Ticket Status Breakdown', metrics.statusCounts);
 
   // --- Table --------------------------------------------------------------
-  function table(title, columns, rows, { emptyLabel = '(none)', rowColor } = {}) {
-    sectionTitle(title);
-    const colW = columns.map((c) => c.width);
+  function table(title, columns, rows, { emptyLabel = 'Nothing to report.', caption, rowColor } = {}) {
+    sectionTitle(title, caption);
     const colX = [MARGIN];
-    for (let i = 0; i < colW.length - 1; i++) colX.push(colX[i] + colW[i]);
+    for (let i = 0; i < columns.length - 1; i++) colX.push(colX[i] + columns[i].width);
 
     function drawColumnHeaders() {
-      ensureSpace(20);
-      columns.forEach((c, i) => text(c.label, colX[i], y, { size: 8.5, f: bold, color: COLORS.sub }));
-      y -= 14;
-      page.drawLine({ start: { x: MARGIN, y: y + 4 }, end: { x: PAGE_WIDTH - MARGIN, y: y + 4 }, thickness: 0.75, color: COLORS.line });
+      columns.forEach((c, i) => text(c.label.toUpperCase(), colX[i], y - 9, { size: 7.5, f: bold, color: COLORS.faint }));
+      y -= 15;
+      rule(y, { color: COLORS.line, thickness: 0.75 });
+      y -= 5;
+    }
+
+    // Column headings over an empty table are just noise — an empty section
+    // says its one sentence and gets out of the way.
+    if (rows.length === 0) {
+      emptyNote(emptyLabel);
+      return;
     }
     drawColumnHeaders();
 
-    if (rows.length === 0) {
-      text(emptyLabel, MARGIN, y - 4, { size: 9, color: COLORS.faint });
-      y -= 20;
-      return;
-    }
-
     rows.forEach((row, i) => {
       const pageBefore = page;
-      ensureSpace(16);
-      if (page !== pageBefore) drawColumnHeaders();
+      ensureSpace(ROW_H);
+      if (page !== pageBefore) {
+        text(`${title} (continued)`, MARGIN, y - 10, { size: 9, f: bold, color: COLORS.faint });
+        y -= 24;
+        drawColumnHeaders();
+      }
       if (i % 2 === 1) {
-        page.drawRectangle({ x: MARGIN, y: y - 10, width: CONTENT_WIDTH, height: 14, color: COLORS.panel });
+        page.drawRectangle({ x: MARGIN - 6, y: y - ROW_H, width: CONTENT_WIDTH + 12, height: ROW_H, color: COLORS.panel });
       }
       row.forEach((cell, ci) => {
-        text(truncate(cell, columns[ci].chars), colX[ci], y - 6, { size: 8.5, color: rowColor || COLORS.ink });
+        // The RMA ID leads each row, so it carries the weight — every other
+        // cell stays regular so the eye lands on the identifier first. On an
+        // alert table, `rowColor` tints only the ID and the trailing reason
+        // column: colouring every cell turns the whole block into a red wash
+        // that no longer reads as a warning.
+        const isEdge = ci === 0 || ci === row.length - 1;
+        text(truncate(cell, columns[ci].chars), colX[ci], y - ROW_H + 6.5, {
+          size: 8.5,
+          f: ci === 0 ? bold : font,
+          color: rowColor && isEdge ? rowColor : ci === 0 ? COLORS.ink : COLORS.sub
+        });
       });
-      y -= 15;
+      y -= ROW_H;
     });
-    y -= 6;
+    y -= 4;
   }
 
   table(
     'Devices In Today',
     [
-      { label: 'RMA ID', width: 90, chars: 16 },
-      { label: 'Customer', width: 150, chars: 26 },
-      { label: 'Product', width: 150, chars: 26 },
-      { label: 'Status', width: CONTENT_WIDTH - 390, chars: 18 }
+      { label: 'RMA ID', width: 100, chars: 18 },
+      { label: 'Customer', width: 145, chars: 26 },
+      { label: 'Product', width: 145, chars: 26 },
+      { label: 'Status', width: CONTENT_WIDTH - 390, chars: 20 }
     ],
-    metrics.devicesInToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Status']])
+    metrics.devicesInToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Status']]),
+    {
+      caption: plural(metrics.devicesInToday.length, 'device', 'devices'),
+      emptyLabel: 'No devices booked in today.'
+    }
   );
 
   table(
     'Devices Out Today (Collected)',
     [
-      { label: 'RMA ID', width: 90, chars: 16 },
-      { label: 'Customer', width: 150, chars: 26 },
-      { label: 'Product', width: 150, chars: 26 },
-      { label: 'Collected By', width: CONTENT_WIDTH - 390, chars: 20 }
+      { label: 'RMA ID', width: 100, chars: 18 },
+      { label: 'Customer', width: 145, chars: 26 },
+      { label: 'Product', width: 145, chars: 26 },
+      { label: 'Collected by', width: CONTENT_WIDTH - 390, chars: 20 }
     ],
-    metrics.devicesOutToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Collected By Name']])
+    metrics.devicesOutToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Collected By Name']]),
+    {
+      caption: plural(metrics.devicesOutToday.length, 'device', 'devices'),
+      emptyLabel: 'No devices collected today.'
+    }
   );
 
   table(
     'Currently Red-Flagged (Needs Attention)',
     [
-      { label: 'RMA ID', width: 90, chars: 16 },
+      { label: 'RMA ID', width: 100, chars: 18 },
       { label: 'Customer', width: 120, chars: 22 },
-      { label: 'Product', width: 130, chars: 22 },
-      { label: 'Reason', width: CONTENT_WIDTH - 340, chars: 40 }
+      { label: 'Product', width: 125, chars: 22 },
+      { label: 'Reason', width: CONTENT_WIDTH - 345, chars: 42 }
     ],
     metrics.redFlagged.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Red Flag Reason']]),
-    { rowColor: COLORS.red }
+    {
+      caption: metrics.redFlagged.length ? plural(metrics.redFlagged.length, 'ticket', 'tickets') : undefined,
+      emptyLabel: 'Nothing red-flagged — all open tickets are on track.',
+      rowColor: COLORS.red
+    }
   );
 
   // --- Footer on every page -------------------------------------------
   const pages = pdfDoc.getPages();
   pages.forEach((p, i) => {
-    p.drawLine({ start: { x: MARGIN, y: 28 }, end: { x: PAGE_WIDTH - MARGIN, y: 28 }, thickness: 0.75, color: COLORS.line });
-    p.drawText('Pentagon Solutions - RMA System', { x: MARGIN, y: 16, size: 7.5, font, color: COLORS.faint });
+    p.drawLine({ start: { x: MARGIN, y: 30 }, end: { x: PAGE_WIDTH - MARGIN, y: 30 }, thickness: 0.75, color: COLORS.line });
+    p.drawText('Pentagon Solutions — RMA System', { x: MARGIN, y: 17, size: 7.5, font, color: COLORS.faint });
     const pageStr = `Page ${i + 1} of ${pages.length}`;
     const pw = font.widthOfTextAtSize(pageStr, 7.5);
-    p.drawText(pageStr, { x: PAGE_WIDTH - MARGIN - pw, y: 16, size: 7.5, font, color: COLORS.faint });
+    p.drawText(pageStr, { x: PAGE_WIDTH - MARGIN - pw, y: 17, size: 7.5, font, color: COLORS.faint });
   });
 
   return pdfDoc.save();
