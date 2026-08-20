@@ -74,4 +74,16 @@ describe('POST /reports/generate', () => {
 
     expect(env.RMA_REPORTS._store.has('RMA-Report-Latest.pdf')).toBe(true);
   });
+
+  it('names the download with today\'s date, and exposes that header to the browser', async () => {
+    const res = await worker.fetch(
+      apiRequest('/reports/generate', { method: 'POST', headers: { Origin: 'https://rma.pentagon-solutions.tech' } }),
+      env,
+      fakeCtx
+    );
+    const disposition = res.headers.get('Content-Disposition');
+    const today = new Date().toISOString().slice(0, 10);
+    expect(disposition).toContain(`RMA-Report-${today}.pdf`);
+    expect(res.headers.get('Access-Control-Expose-Headers')).toContain('Content-Disposition');
+  });
 });

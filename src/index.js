@@ -22,7 +22,13 @@ function corsHeaders(request) {
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
+    // Content-Disposition isn't on the CORS-safelisted response header list,
+    // so without this the browser's fetch() can see the PDF bytes but not
+    // the filename in it (api.ts reads Content-Disposition to name the
+    // downloaded report/ticket-PDF file) — it silently falls back to a
+    // generic name instead of erroring, which is what made this easy to miss.
+    'Access-Control-Expose-Headers': 'Content-Disposition'
   };
 }
 
