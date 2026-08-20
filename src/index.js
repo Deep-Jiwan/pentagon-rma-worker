@@ -4,6 +4,8 @@ import { generateRmaId } from './rmaId.js';
 import { HEADERS } from './constants.js';
 import { downloadFile, uploadPdf, deleteFile } from './storage.js';
 import { runRedFlagScan, runDailyReport } from './cron.js';
+import { computeReportMetrics } from './reportData.js';
+import { buildReportPdf } from './pdfReport.js';
 
 // Origins allowed to call this Worker from a browser. Access-Control-Allow-Origin
 // can only ever hold one value, so we reflect back whichever of these matched
@@ -82,8 +84,8 @@ export default {
       if (url.pathname === '/return' && request.method === 'POST') {
         return await handleReturn(request, env);
       }
-      if (url.pathname === '/reports/latest' && request.method === 'GET') {
-        return await handleLatestReport(request, env);
+      if (url.pathname === '/reports/generate' && request.method === 'POST') {
+        return await handleGenerateReport(request, env);
       }
       const pdfMatch = url.pathname.match(/^\/tickets\/([^/]+)\/pdf$/);
       if (pdfMatch && request.method === 'POST') {
@@ -118,19 +120,24 @@ export default {
   }
 };
 
-// GET /reports/latest — proxies the most recent daily PDF report from
-// R2 through the Worker, rather than exposing the bucket publicly
-// (the report contains customer names and phone numbers).
-async function handleLatestReport(request, env) {
-  const cached = await env.RMA_COUNTERS.get('latest_report', { type: 'json' });
-  if (!cached) return json({ error: 'No report generated yet' }, 404, request);
+// POST /reports/generate — builds the report PDF fresh from the sheet's
+// current state (not a cached daily snapshot), saves it into R2 as the
+// canonical "latest" copy, then streams it straight back. The Worker
+// proxies it rather than exposing the bucket publicly since the report
+// contains customer names and phone numbers. The CRON's daily archival
+// report (runDailyReport in cron.js) is unaffected — it still runs on
+// schedule and keeps its own dated copies in R2.
+async function handleGenerateReport(request, env) {
+  const metrics = await computeReportMetrics(env);
+  const pdfBytes = await buildReportPdf(metrics);
 
-  const bytes = await downloadFile(env, cached.fileId);
+  const filename = 'RMA-Report-Latest.pdf';
+  await uploadPdf(env, filename, pdfBytes);
 
-  return new Response(bytes, {
+  return new Response(pdfBytes, {
     headers: {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${cached.filename}"`,
+      'Content-Disposition': `attachment; filename="RMA-Report-${metrics.generatedAtLabel}.pdf"`,
       ...corsHeaders(request)
     }
   });
@@ -176,16 +183,21 @@ async function handleDownloadTicketPdf(request, env, rmaId) {
   });
 }
 
-// DELETE /tickets/:rmaId — permanently removes a ticket from every tab it
-// appears in (Open or Closed, whichever it's currently in, plus its
-// Master mirror), and best-effort cleans up its saved PDF from R2. This
-// is a hard delete with no undo — the frontend is expected to confirm
-// with the user before calling it.
+// DELETE /tickets/:rmaId — permanently removes a ticket from Open or Closed
+// (whichever it's currently in), and best-effort cleans up its saved PDF
+// from R2. This is a hard delete with no undo on those two tabs — the
+// frontend is expected to confirm with the user before calling it.
+//
+// Master is deliberately left alone: it's the permanent record of every
+// RMA that's ever existed (open, closed, AND deleted), so it's never
+// pruned here. Instead the Master row's Status is marked "Deleted (was:
+// ...)" so it's obvious at a glance the ticket no longer exists on the
+// live tabs, without losing the history.
 async function handleDeleteTicket(request, env, rmaId) {
   const accessToken = await getAccessToken(env);
   let deletedFromAnyTab = false;
 
-  for (const tab of ['Open', 'Closed', 'Master']) {
+  for (const tab of ['Open', 'Closed']) {
     const found = await findRowByRmaId(env, accessToken, tab, rmaId);
     if (found) {
       await deleteRow(env, accessToken, tab, found.sheetRowNumber);
@@ -195,6 +207,16 @@ async function handleDeleteTicket(request, env, rmaId) {
 
   if (!deletedFromAnyTab) {
     return json({ error: `RMA ID ${rmaId} not found` }, 404, request);
+  }
+
+  const masterFound = await findRowByRmaId(env, accessToken, 'Master', rmaId);
+  if (masterFound) {
+    const record = rowToObject(masterFound.values);
+    if (!record['Status'].startsWith('Deleted')) {
+      record['Status'] = `Deleted (was: ${record['Status'] || 'unknown'})`;
+      record['Last Edited Timestamp'] = new Date().toISOString();
+      await updateRow(env, accessToken, 'Master', masterFound.sheetRowNumber, objectToRow(record));
+    }
   }
 
   try {
