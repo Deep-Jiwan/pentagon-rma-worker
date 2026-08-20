@@ -72,7 +72,7 @@ export async function runDailyReport(env) {
     filename,
     fileId: uploaded.id,
     devicesIn: metrics.totals.devicesInToday,
-    devicesClosed: metrics.totals.devicesClosedToday,
+    devicesOut: metrics.totals.devicesOutToday,
     redFlags: metrics.totals.redFlagged
   };
 }

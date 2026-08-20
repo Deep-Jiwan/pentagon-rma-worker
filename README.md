@@ -51,6 +51,22 @@ npm run dev      # local dev server, wrangler dev
 npm run deploy    # ships it to Cloudflare
 ```
 
+## Tests
+
+```bash
+npm test          # run once
+npm run test:watch
+```
+
+Runs the actual `fetch()` handler (intake, update, return, delete, tickets,
+device-history, the hourly red-flag scan, and report generation) against an
+in-memory fake of the Google Sheets/OAuth APIs — see `test/helpers/`. No real
+credentials or network needed. **Run this before deploying** — this is the
+suite that would have caught the regression in
+[PR #2](https://github.com/Deep-Jiwan/pentagon-rma-worker/pull/2), where an
+older deploy silently reverted on-demand reports and the Master-retains-
+deleted-tickets behavior.
+
 ## Endpoints
 
 All endpoints below (except the `OPTIONS` preflight) require a shared

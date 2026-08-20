@@ -36,31 +36,11 @@ function truncate(str, len) {
   return str.length > len ? str.slice(0, len - 1) + '…' : str;
 }
 
-function fmtDays(n) {
-  if (n === null || n === undefined) return '-';
-  return n === 1 ? '1 day' : `${n.toFixed(n < 10 ? 1 : 0)} days`;
-}
-
-function polarPoint(cx, cy, r, angleDeg) {
-  const rad = ((angleDeg - 90) * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
-}
-
-function pieSlicePath(cx, cy, r, startAngle, endAngle) {
-  const segments = Math.max(2, Math.ceil((endAngle - startAngle) / 6));
-  let d = `M ${cx} ${cy} `;
-  const step = (endAngle - startAngle) / segments;
-  for (let i = 0; i <= segments; i++) {
-    const p = polarPoint(cx, cy, r, startAngle + step * i);
-    d += `L ${p.x} ${p.y} `;
-  }
-  return d + 'Z';
-}
-
-// Builds the branded, multi-section PDF report from a computeReportMetrics()
-// snapshot. Everything is drawn with pdf-lib's vector primitives (rects,
-// circles, SVG-path pie slices) since Workers has no canvas/rasterizer to
-// lean on for charts.
+// Builds the branded, on-demand daily report PDF from a computeReportMetrics()
+// snapshot — a single day's operational snapshot (devices in, devices out,
+// current open/red-flag counts), not a historical analysis. Drawn with
+// pdf-lib's vector primitives since Workers has no canvas/rasterizer to lean
+// on for charts.
 export async function buildReportPdf(metrics) {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -99,7 +79,7 @@ export async function buildReportPdf(metrics) {
   function drawHeader() {
     page.drawRectangle({ x: 0, y: PAGE_HEIGHT - 78, width: PAGE_WIDTH, height: 78, color: COLORS.ink });
     text('Pentagon Solutions', MARGIN, PAGE_HEIGHT - 34, { size: 18, f: bold, color: COLORS.white });
-    text('RMA Status Report', MARGIN, PAGE_HEIGHT - 54, { size: 11, f: font, color: hex('#cbd5e1') });
+    text('Daily RMA Report', MARGIN, PAGE_HEIGHT - 54, { size: 11, f: font, color: hex('#cbd5e1') });
     const genLine = `Generated ${metrics.generatedAtIso.slice(0, 16).replace('T', ' ')} UTC`;
     const genWidth = font.widthOfTextAtSize(genLine, 9);
     text(genLine, PAGE_WIDTH - MARGIN - genWidth, PAGE_HEIGHT - 34, { size: 9, f: font, color: hex('#cbd5e1') });
@@ -132,15 +112,14 @@ export async function buildReportPdf(metrics) {
 
   const t = metrics.totals;
   kpiCards([
+    { label: 'DEVICES IN TODAY', value: t.devicesInToday, accent: COLORS.purple, soft: COLORS.panel },
+    { label: 'DEVICES OUT TODAY', value: t.devicesOutToday, accent: COLORS.amber, soft: COLORS.panel },
     { label: 'OPEN TICKETS', value: t.open, accent: COLORS.blue, soft: COLORS.blueSoft },
-    { label: 'CLOSED TICKETS', value: t.closed, accent: COLORS.green, soft: COLORS.greenSoft },
-    { label: 'RED FLAGS', value: t.redFlagged, accent: COLORS.red, soft: t.redFlagged > 0 ? COLORS.redSoft : COLORS.panel },
-    { label: 'IN TODAY', value: t.devicesInToday, accent: COLORS.purple, soft: COLORS.panel },
-    { label: 'CLOSED TODAY', value: t.devicesClosedToday, accent: COLORS.amber, soft: COLORS.panel }
+    { label: 'RED FLAGS', value: t.redFlagged, accent: COLORS.red, soft: t.redFlagged > 0 ? COLORS.redSoft : COLORS.panel }
   ]);
 
   // --- Horizontal bar chart -------------------------------------------
-  function barChart(title, data, { emptyLabel = 'No data', unit = '' } = {}) {
+  function barChart(title, data, { emptyLabel = 'No data' } = {}) {
     sectionTitle(title);
     if (data.length === 0) {
       text(emptyLabel, MARGIN, y, { size: 9.5, color: COLORS.faint });
@@ -162,95 +141,12 @@ export async function buildReportPdf(metrics) {
       text(truncate(label, 22), MARGIN, rowY - 13, { size: 9, color: COLORS.sub });
       page.drawRectangle({ x: MARGIN + labelW, y: rowY - 15, width: barAreaW, height: 11, color: COLORS.panel });
       page.drawRectangle({ x: MARGIN + labelW, y: rowY - 15, width: barW, height: 11, color });
-      text(`${value}${unit}`, MARGIN + labelW + barAreaW + 8, rowY - 13, { size: 9, f: bold, color: COLORS.ink });
+      text(`${value}`, MARGIN + labelW + barAreaW + 8, rowY - 13, { size: 9, f: bold, color: COLORS.ink });
     });
     y -= chartH + 12;
   }
 
-  barChart('Open Ticket Status Breakdown', metrics.statusCounts);
-
-  // --- Pie chart ------------------------------------------------------
-  function pieChart(title, data) {
-    sectionTitle(title);
-    if (data.length === 0) {
-      text('No data', MARGIN, y, { size: 9.5, color: COLORS.faint });
-      y -= 20;
-      return;
-    }
-    const r = 52;
-    const chartH = r * 2 + 10;
-    ensureSpace(chartH);
-    const cx = MARGIN + r + 4;
-    const cy = y - r - 4;
-    const total = data.reduce((s, [, v]) => s + v, 0) || 1;
-
-    let angle = 0;
-    data.forEach(([, value], i) => {
-      const sweep = (value / total) * 360;
-      const color = SERIES_PALETTE[i % SERIES_PALETTE.length];
-      if (sweep > 0) {
-        page.drawSvgPath(pieSlicePath(0, 0, r, angle, angle + sweep), { x: cx, y: cy, color, borderColor: COLORS.white, borderWidth: 1.5 });
-      }
-      angle += sweep;
-    });
-
-    const legendX = MARGIN + r * 2 + 30;
-    let legendY = y - 6;
-    data.forEach(([label, value], i) => {
-      const color = SERIES_PALETTE[i % SERIES_PALETTE.length];
-      const pct = Math.round((value / total) * 100);
-      page.drawRectangle({ x: legendX, y: legendY - 9, width: 9, height: 9, color });
-      text(`${truncate(label, 24)} - ${value} (${pct}%)`, legendX + 14, legendY - 8, { size: 9, color: COLORS.sub });
-      legendY -= 16;
-    });
-
-    y -= chartH + 12;
-  }
-
-  pieChart('Top Brands (All Tickets)', metrics.brandCounts);
-
-  // --- Vertical bar chart ------------------------------------------------
-  function verticalBarChart(title, data) {
-    sectionTitle(title);
-    if (data.length === 0) {
-      text('No data', MARGIN, y, { size: 9.5, color: COLORS.faint });
-      y -= 20;
-      return;
-    }
-    const chartH = 130;
-    const topPad = 22;
-    const bottomPad = 16;
-    const maxBarH = chartH - topPad - bottomPad;
-    ensureSpace(chartH);
-    const baseY = y - chartH + bottomPad;
-    const max = Math.max(...data.map(([, v]) => v), 1);
-
-    const gap = 28;
-    const barW = Math.min(70, (CONTENT_WIDTH - gap * (data.length - 1)) / data.length - 10);
-    const totalW = data.length * barW + (data.length - 1) * gap;
-    const startX = MARGIN + (CONTENT_WIDTH - totalW) / 2;
-
-    page.drawLine({ start: { x: MARGIN, y: baseY }, end: { x: PAGE_WIDTH - MARGIN, y: baseY }, thickness: 0.75, color: COLORS.line });
-
-    data.forEach(([label, value], i) => {
-      const x = startX + i * (barW + gap);
-      const h = Math.max(2, (value / max) * maxBarH);
-      const color = SERIES_PALETTE[i % SERIES_PALETTE.length];
-      page.drawRectangle({ x, y: baseY, width: barW, height: h, color });
-
-      const valueStr = String(value);
-      const valueWidth = bold.widthOfTextAtSize(valueStr, 10);
-      text(valueStr, x + (barW - valueWidth) / 2, baseY + h + 6, { size: 10, f: bold, color: COLORS.ink });
-
-      const labelStr = truncate(label, 14);
-      const labelWidth = font.widthOfTextAtSize(labelStr, 8);
-      text(labelStr, x + (barW - labelWidth) / 2, baseY - 12, { size: 8, color: COLORS.sub });
-    });
-
-    y -= chartH + 12;
-  }
-
-  verticalBarChart('Warranty Mix (All Tickets)', metrics.warrantyCounts);
+  barChart('Open Ticket Status Breakdown (current)', metrics.statusCounts);
 
   // --- Table --------------------------------------------------------------
   function table(title, columns, rows, { emptyLabel = '(none)', rowColor } = {}) {
@@ -289,38 +185,38 @@ export async function buildReportPdf(metrics) {
   }
 
   table(
-    'Red-Flagged Tickets (Needs Attention)',
+    'Devices In Today',
     [
-      { label: 'RMA ID', width: 80, chars: 14 },
-      { label: 'Customer', width: 130, chars: 22 },
+      { label: 'RMA ID', width: 90, chars: 16 },
+      { label: 'Customer', width: 150, chars: 26 },
+      { label: 'Product', width: 150, chars: 26 },
+      { label: 'Status', width: CONTENT_WIDTH - 390, chars: 18 }
+    ],
+    metrics.devicesInToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Status']])
+  );
+
+  table(
+    'Devices Out Today (Collected)',
+    [
+      { label: 'RMA ID', width: 90, chars: 16 },
+      { label: 'Customer', width: 150, chars: 26 },
+      { label: 'Product', width: 150, chars: 26 },
+      { label: 'Collected By', width: CONTENT_WIDTH - 390, chars: 20 }
+    ],
+    metrics.devicesOutToday.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Collected By Name']])
+  );
+
+  table(
+    'Currently Red-Flagged (Needs Attention)',
+    [
+      { label: 'RMA ID', width: 90, chars: 16 },
+      { label: 'Customer', width: 120, chars: 22 },
       { label: 'Product', width: 130, chars: 22 },
       { label: 'Reason', width: CONTENT_WIDTH - 340, chars: 40 }
     ],
     metrics.redFlagged.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Red Flag Reason']]),
     { rowColor: COLORS.red }
   );
-
-  table(
-    'Oldest Open Backlog',
-    [
-      { label: 'RMA ID', width: 80, chars: 14 },
-      { label: 'Customer', width: 120, chars: 20 },
-      { label: 'Product', width: 110, chars: 18 },
-      { label: 'Status', width: 90, chars: 16 },
-      { label: 'Days Open', width: CONTENT_WIDTH - 400, chars: 12 }
-    ],
-    metrics.backlog.map((r) => [r['RMA ID'], r['Customer Name'], r['Product Type'], r['Status'], String(r._daysOpen)])
-  );
-
-  // --- Turnaround summary --------------------------------------------------
-  sectionTitle('Average Turnaround Time');
-  ensureSpace(20);
-  const turnaroundLine =
-    metrics.avgTurnaroundDays === null
-      ? 'Not enough closed tickets with both Date In and Date Out to calculate.'
-      : `${fmtDays(metrics.avgTurnaroundDays)} on average, based on the last ${metrics.turnaroundSampleSize} closed ticket${metrics.turnaroundSampleSize === 1 ? '' : 's'}.`;
-  text(turnaroundLine, MARGIN, y, { size: 9.5, color: COLORS.sub });
-  y -= 20;
 
   // --- Footer on every page -------------------------------------------
   const pages = pdfDoc.getPages();

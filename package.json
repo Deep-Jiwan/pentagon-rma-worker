@@ -5,9 +5,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
+    "vitest": "^4.1.11",
     "wrangler": "^3.78.0"
   },
   "dependencies": {
