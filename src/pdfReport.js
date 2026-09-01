@@ -47,10 +47,36 @@ function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+// One decimal is the difference between "2.4 days" and "2 days" on a
+// short repair, and noise once a ticket has been in for a fortnight.
+function fmtDays(n) {
+  return n.toFixed(n < 10 ? 1 : 0);
+}
+
+function polarPoint(cx, cy, r, angleDeg) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+// pdf-lib has no arc primitive, so a slice is a fan of short chords — one
+// segment per ~6° keeps the curve smooth at the radius this report draws at.
+function pieSlicePath(cx, cy, r, startAngle, endAngle) {
+  const segments = Math.max(2, Math.ceil((endAngle - startAngle) / 6));
+  let d = `M ${cx} ${cy} `;
+  const step = (endAngle - startAngle) / segments;
+  for (let i = 0; i <= segments; i++) {
+    const pt = polarPoint(cx, cy, r, startAngle + step * i);
+    d += `L ${pt.x} ${pt.y} `;
+  }
+  return d + 'Z';
+}
+
 // Builds the branded, on-demand daily report PDF from a computeReportMetrics()
-// snapshot — a single day's operational snapshot (devices in, devices out,
-// current open/red-flag counts), not a historical analysis. Drawn with
-// pdf-lib's vector primitives since Workers has no canvas/rasterizer to lean
+// snapshot: the day's movement (devices in, devices out, current open/red-flag
+// counts), the standing shop mix (top brands, warranty split, average
+// turnaround) that the frontend's Report tab also shows, and a closing roster
+// of every currently open ticket. Drawn with pdf-lib's vector primitives
+// (rects, SVG-path pie slices) since Workers has no canvas/rasterizer to lean
 // on for charts.
 //
 // Layout convention: `y` is the *top edge* of whatever gets drawn next, and
@@ -117,11 +143,15 @@ export async function buildReportPdf(metrics) {
   // `caption` is the right-hand row count — it turns a bare heading into a
   // summary line, so an empty section reads as "0 devices" rather than as a
   // heading that looks like it failed to render.
-  function sectionTitle(str, caption) {
-    // Reserve the heading plus a first row, so a heading never strands
-    // itself at the foot of a page. A fresh page already has its own top
-    // spacing, so only pay SECTION_GAP when we stayed put.
-    const broke = ensureSpace(SECTION_GAP + HEADING_TO_BODY + ROW_H * 2);
+  // `bodyH` is how much of the section's content has to travel with the
+  // heading. Tables stream row by row, so two rows is enough; a chart or a
+  // stat panel is drawn in one atomic pass and has to reserve its full
+  // height here, or the heading stays behind while the body jumps a page.
+  function sectionTitle(str, caption, { bodyH = ROW_H * 2 } = {}) {
+    // Reserve the heading plus that body, so a heading never strands itself
+    // at the foot of a page. A fresh page already has its own top spacing,
+    // so only pay SECTION_GAP when we stayed put.
+    const broke = ensureSpace(SECTION_GAP + HEADING_TO_BODY + bodyH);
     if (!broke) y -= SECTION_GAP;
 
     text(str, MARGIN, y - 10, { size: 12, f: bold, color: COLORS.ink });
@@ -197,6 +227,135 @@ export async function buildReportPdf(metrics) {
   }
 
   barChart('Open Ticket Status Breakdown', metrics.statusCounts);
+
+  // --- Pie chart --------------------------------------------------------
+  // The legend carries the labels, so the slices themselves stay unlabelled —
+  // at this radius, in-slice text on a 4% wedge is unreadable anyway.
+  function pieChart(title, data, { emptyLabel = 'No data to break down.', unit = 'brand' } = {}) {
+    const r = 52;
+    const legendH = data.length * 16;
+    const bodyH = Math.max(r * 2, legendH) + 10;
+
+    sectionTitle(title, data.length ? plural(data.length, unit, `${unit}s`) : undefined, { bodyH });
+    if (data.length === 0) {
+      emptyNote(emptyLabel);
+      return;
+    }
+
+    const cx = MARGIN + r + 4;
+    const cy = y - r - 5;
+    const total = data.reduce((s2, [, v]) => s2 + v, 0) || 1;
+
+    let angle = 0;
+    data.forEach(([, value], i) => {
+      const sweep = (value / total) * 360;
+      if (sweep > 0) {
+        page.drawSvgPath(pieSlicePath(0, 0, r, angle, angle + sweep), {
+          x: cx,
+          y: cy,
+          color: SERIES_PALETTE[i % SERIES_PALETTE.length],
+          borderColor: COLORS.white,
+          borderWidth: 1.5
+        });
+      }
+      angle += sweep;
+    });
+
+    // Centre the legend block against the pie rather than top-aligning it,
+    // so a two-entry legend doesn't float beside an otherwise empty circle.
+    const legendX = MARGIN + r * 2 + 30;
+    let legendY = y - 5 - Math.max(0, (bodyH - 10 - legendH) / 2);
+    data.forEach(([label, value], i) => {
+      const pct = Math.round((value / total) * 100);
+      page.drawRectangle({ x: legendX, y: legendY - 9, width: 9, height: 9, color: SERIES_PALETTE[i % SERIES_PALETTE.length] });
+      text(`${truncate(label, 24)} — ${value} (${pct}%)`, legendX + 14, legendY - 8, { size: 9, color: COLORS.sub });
+      legendY -= 16;
+    });
+
+    y -= bodyH;
+  }
+
+  pieChart('Top Brands (All Tickets)', metrics.brandCounts, {
+    emptyLabel: 'No tickets on record yet.'
+  });
+
+  // --- Vertical bar chart -------------------------------------------------
+  // Used for the warranty split: few categories, long labels, and the
+  // comparison people want is column-height at a glance.
+  function verticalBarChart(title, data, { emptyLabel = 'No data to break down.', unit = 'category', unitPlural } = {}) {
+    const chartH = 132;
+    const topPad = 22;
+    const bottomPad = 22;
+    const maxBarH = chartH - topPad - bottomPad;
+
+    sectionTitle(title, data.length ? plural(data.length, unit, unitPlural || `${unit}s`) : undefined, { bodyH: chartH });
+    if (data.length === 0) {
+      emptyNote(emptyLabel);
+      return;
+    }
+
+    const baseY = y - chartH + bottomPad;
+    const max = Math.max(...data.map(([, v]) => v), 1);
+
+    // Each column owns an equal slice of the width; the bar is the middle
+    // 60% of its slice, which keeps bars readable whether there are two
+    // categories or six.
+    const slotW = CONTENT_WIDTH / data.length;
+    const barW = Math.max(18, Math.min(70, slotW * 0.6));
+    const labelChars = Math.max(6, Math.floor(slotW / 4.5));
+
+    rule(baseY, { color: COLORS.line, thickness: 0.75 });
+
+    data.forEach(([label, value], i) => {
+      const slotX = MARGIN + i * slotW;
+      const x = slotX + (slotW - barW) / 2;
+      const h = Math.max(2, (value / max) * maxBarH);
+      page.drawRectangle({ x, y: baseY, width: barW, height: h, color: SERIES_PALETTE[i % SERIES_PALETTE.length] });
+
+      const valueStr = String(value);
+      text(valueStr, slotX + (slotW - bold.widthOfTextAtSize(valueStr, 10)) / 2, baseY + h + 6, { size: 10, f: bold, color: COLORS.ink });
+
+      const labelStr = truncate(label, labelChars);
+      text(labelStr, slotX + (slotW - font.widthOfTextAtSize(labelStr, 8)) / 2, baseY - 13, { size: 8, color: COLORS.sub });
+    });
+
+    y -= chartH;
+  }
+
+  verticalBarChart('Warranty Mix (All Tickets)', metrics.warrantyCounts, {
+    unit: 'warranty status',
+    unitPlural: 'warranty statuses',
+    emptyLabel: 'No tickets on record yet.'
+  });
+
+  // --- Headline stat ------------------------------------------------------
+  // One figure that needs no chart. A panel rather than a fifth KPI card, so
+  // the number keeps its unit and its sample caption beside it.
+  function statPanel(title, value, unit, caption) {
+    const h = 62;
+    sectionTitle(title, undefined, { bodyH: h });
+    page.drawRectangle({ x: MARGIN, y: y - h, width: CONTENT_WIDTH, height: h, color: COLORS.panel, borderColor: COLORS.line, borderWidth: 1 });
+    page.drawRectangle({ x: MARGIN, y: y - h, width: 3, height: h, color: COLORS.green });
+
+    if (value === null) {
+      text(caption, MARGIN + 16, y - 35, { size: 9, color: COLORS.faint });
+    } else {
+      text(value, MARGIN + 16, y - 32, { size: 22, f: bold, color: COLORS.green });
+      text(unit, MARGIN + 16 + bold.widthOfTextAtSize(value, 22) + 6, y - 32, { size: 10, color: COLORS.sub });
+      text(caption, MARGIN + 16, y - h + 14, { size: 8, color: COLORS.faint });
+    }
+    y -= h;
+  }
+
+  const avgTurnaround = metrics.avgTurnaroundDays;
+  statPanel(
+    'Average Turnaround Time',
+    avgTurnaround === null ? null : fmtDays(avgTurnaround),
+    'days',
+    avgTurnaround === null
+      ? 'Not enough closed tickets with both a Date In and a Date Out to calculate.'
+      : `Across the ${plural(metrics.turnaroundSampleSize, 'most recently closed ticket', 'most recently closed tickets')}.`
+  );
 
   // --- Table --------------------------------------------------------------
   function table(title, columns, rows, { emptyLabel = 'Nothing to report.', caption, rowColor } = {}) {
@@ -291,6 +450,31 @@ export async function buildReportPdf(metrics) {
       caption: metrics.redFlagged.length ? plural(metrics.redFlagged.length, 'ticket', 'tickets') : undefined,
       emptyLabel: 'Nothing red-flagged — all open tickets are on track.',
       rowColor: COLORS.red
+    }
+  );
+
+  // Closes the report with the full picture: every ticket still in the shop,
+  // oldest first, so the longest-waiting device is the first line read rather
+  // than something buried mid-table.
+  table(
+    'All Currently Open Tickets',
+    [
+      { label: 'RMA ID', width: 100, chars: 18 },
+      { label: 'Customer', width: 125, chars: 22 },
+      { label: 'Product', width: 110, chars: 19 },
+      { label: 'Status', width: 105, chars: 18 },
+      { label: 'Days Open', width: CONTENT_WIDTH - 440, chars: 10 }
+    ],
+    metrics.openTickets.map((r) => [
+      r['RMA ID'],
+      r['Customer Name'],
+      r['Product Type'],
+      r['Status'],
+      r._daysOpen === null ? '—' : String(r._daysOpen)
+    ]),
+    {
+      caption: plural(metrics.openTickets.length, 'ticket', 'tickets'),
+      emptyLabel: 'No open tickets — the shop is clear.'
     }
   );
 

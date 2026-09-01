@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import worker from '../src/index.js';
 import { computeReportMetrics } from '../src/reportData.js';
+import { buildReportPdf } from '../src/pdfReport.js';
 import { createMockEnv } from './helpers/mockEnv.js';
 import { installGoogleMock } from './helpers/mockGoogle.js';
 import { buildRow, apiRequest, fakeCtx } from './helpers/fixtures.js';
 
 const TODAY = new Date().toISOString();
 const TWO_DAYS_AGO = new Date(Date.now() - 2 * 86400000).toISOString();
+const TEN_DAYS_AGO = new Date(Date.now() - 10 * 86400000).toISOString();
 
 describe('computeReportMetrics', () => {
   let env, google;
@@ -15,12 +17,13 @@ describe('computeReportMetrics', () => {
     env = createMockEnv();
     google = installGoogleMock({
       Open: [
-        buildRow({ 'RMA ID': 'RMA-IN-TODAY', 'Date In': TODAY, Status: 'Diagnostics' }),
-        buildRow({ 'RMA ID': 'RMA-OLD-OPEN', 'Date In': TWO_DAYS_AGO, Status: 'Repair', 'Red Flag': 'Yes', 'Red Flag Reason': 'Stuck in Diagnostics for over 24 hours' })
+        buildRow({ 'RMA ID': 'RMA-IN-TODAY', 'Date In': TODAY, Status: 'Diagnostics', Brand: 'Hikvision', 'Warranty Status': 'Under Warranty' }),
+        buildRow({ 'RMA ID': 'RMA-OLD-OPEN', 'Date In': TWO_DAYS_AGO, Status: 'Repair', Brand: 'Dahua', 'Warranty Status': 'Under Warranty', 'Red Flag': 'Yes', 'Red Flag Reason': 'Stuck in Diagnostics for over 24 hours' }),
+        buildRow({ 'RMA ID': 'RMA-OLDEST-OPEN', 'Date In': TEN_DAYS_AGO, Status: 'Awaiting Parts', Brand: 'Hikvision', 'Warranty Status': 'No warranty (Paid Service)' })
       ],
       Closed: [
-        buildRow({ 'RMA ID': 'RMA-OUT-TODAY', 'Date In': TWO_DAYS_AGO, 'Date Out': TODAY, Status: 'Closed', 'Collected By Name': 'Jane Doe' }),
-        buildRow({ 'RMA ID': 'RMA-OUT-OLD', 'Date In': TWO_DAYS_AGO, 'Date Out': TWO_DAYS_AGO, Status: 'Closed' })
+        buildRow({ 'RMA ID': 'RMA-OUT-TODAY', 'Date In': TWO_DAYS_AGO, 'Date Out': TODAY, Status: 'Closed', Brand: 'Hikvision', 'Warranty Status': 'Void under warranty', 'Collected By Name': 'Jane Doe' }),
+        buildRow({ 'RMA ID': 'RMA-OUT-OLD', 'Date In': TWO_DAYS_AGO, 'Date Out': TWO_DAYS_AGO, Status: 'Closed', Brand: 'ZKTeco', 'Warranty Status': 'Under Warranty' })
       ]
     });
   });
@@ -30,7 +33,7 @@ describe('computeReportMetrics', () => {
   it('scopes devices in/out to today only, and totals/red-flags to current Open state', async () => {
     const metrics = await computeReportMetrics(env);
 
-    expect(metrics.totals.open).toBe(2);
+    expect(metrics.totals.open).toBe(3);
     expect(metrics.totals.redFlagged).toBe(1);
     expect(metrics.totals.devicesInToday).toBe(1);
     expect(metrics.totals.devicesOutToday).toBe(1);
@@ -46,6 +49,68 @@ describe('computeReportMetrics', () => {
     const outIds = metrics.devicesOutToday.map((r) => r['RMA ID']);
     expect(inIds).not.toContain('RMA-OLD-OPEN');
     expect(outIds).not.toContain('RMA-OUT-OLD');
+  });
+
+  it('lists every open ticket, oldest first, with its age in days', async () => {
+    const metrics = await computeReportMetrics(env);
+
+    expect(metrics.openTickets.map((r) => r['RMA ID'])).toEqual([
+      'RMA-OLDEST-OPEN',
+      'RMA-OLD-OPEN',
+      'RMA-IN-TODAY'
+    ]);
+    expect(metrics.openTickets.map((r) => r._daysOpen)).toEqual([10, 2, 0]);
+    // Closed tickets are history, not "currently open".
+    expect(metrics.openTickets.map((r) => r['RMA ID'])).not.toContain('RMA-OUT-TODAY');
+  });
+
+  it('mixes brands and warranty status across open and closed tickets alike', async () => {
+    const metrics = await computeReportMetrics(env);
+
+    expect(metrics.brandCounts).toEqual([['Hikvision', 3], ['Dahua', 1], ['ZKTeco', 1]]);
+    expect(metrics.warrantyCounts).toEqual([
+      ['Under Warranty', 3],
+      ['No warranty (Paid Service)', 1],
+      ['Void under warranty', 1]
+    ]);
+  });
+
+  it('averages turnaround over closed tickets that have both dates', async () => {
+    const metrics = await computeReportMetrics(env);
+
+    // RMA-OUT-TODAY took two days; RMA-OUT-OLD went out the day it came in.
+    expect(metrics.turnaroundSampleSize).toBe(2);
+    expect(metrics.avgTurnaroundDays).toBeCloseTo(1, 5);
+  });
+
+  it('reports no turnaround at all when no closed ticket has both dates', async () => {
+    google.restore();
+    google = installGoogleMock({
+      Open: [buildRow({ 'RMA ID': 'RMA-1', 'Date In': TODAY })],
+      Closed: [buildRow({ 'RMA ID': 'RMA-2', 'Date In': TODAY, 'Date Out': '' })]
+    });
+
+    const metrics = await computeReportMetrics(env);
+    expect(metrics.avgTurnaroundDays).toBeNull();
+    expect(metrics.turnaroundSampleSize).toBe(0);
+  });
+
+  it('renders every section of the PDF from that snapshot', async () => {
+    const metrics = await computeReportMetrics(env);
+    const bytes = await buildReportPdf(metrics);
+    expect(String.fromCharCode(...bytes.slice(0, 5))).toBe('%PDF-');
+  });
+
+  it('renders a report with nothing in it at all', async () => {
+    google.restore();
+    google = installGoogleMock({ Open: [], Closed: [] });
+
+    const metrics = await computeReportMetrics(env);
+    expect(metrics.openTickets).toEqual([]);
+    expect(metrics.brandCounts).toEqual([]);
+
+    const bytes = await buildReportPdf(metrics);
+    expect(String.fromCharCode(...bytes.slice(0, 5))).toBe('%PDF-');
   });
 });
 

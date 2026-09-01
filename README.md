@@ -117,10 +117,11 @@ Master.
 
 **POST `/reports/generate`**
 Builds the status report fresh from the sheet's *current* state (not a
-cached daily snapshot) — KPI totals, status/warranty/brand breakdowns,
-red-flagged list, oldest-backlog, average turnaround — saves it into the
-`RMA_REPORTS` R2 bucket as `RMA-Report-Latest.pdf`, and streams it back
-directly. The bucket itself is never made public, since the report
+cached daily snapshot) — KPI totals, open status breakdown, top-brands
+pie, warranty mix, average turnaround, today's devices in and out, the
+red-flagged list, and a closing table of every currently open ticket —
+saves it into the `RMA_REPORTS` R2 bucket as `RMA-Report-Latest.pdf`, and
+streams it back directly. The bucket itself is never made public, since the report
 contains customer names and phone numbers. The daily CRON report below
 is unaffected — it still runs on schedule and keeps its own dated copies.
 
