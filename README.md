@@ -61,8 +61,21 @@ so Drive isn't used here at all.
 
 ```bash
 npm run dev      # local dev server, wrangler dev
-npm run deploy    # ships it to Cloudflare
+npm run deploy    # ships it to Cloudflare by hand
 ```
+
+**Production deploys happen on push to `main`**, via
+`.github/workflows/deploy.yml` — it runs `npm test` first and only ships if
+the suite is green. That workflow is the only thing putting code on the
+live Worker; there is no Cloudflare-side Git integration on this repo, so
+deleting it silently stops `main` from reaching production. `npm run deploy`
+is the manual escape hatch, not the normal path.
+
+It needs one repository secret, **`CLOUDFLARE_API_TOKEN`** (Workers Scripts:
+Edit, plus Workers R2 Storage and Workers KV Storage read for the bindings
+in `wrangler.toml`), and `CLOUDFLARE_ACCOUNT_ID` only if that token can see
+more than one account. The Worker's own secrets are untouched by a deploy —
+see Setup above.
 
 ## Tests
 
