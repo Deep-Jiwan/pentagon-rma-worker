@@ -95,6 +95,41 @@ describe('computeReportMetrics', () => {
     expect(metrics.turnaroundSampleSize).toBe(0);
   });
 
+  it('chases only the customers who have not heard about the ticket as it stands', async () => {
+    google.restore();
+    const anHourAgo = new Date(Date.now() - 3600000).toISOString();
+    const halfAnHourAgo = new Date(Date.now() - 1800000).toISOString();
+    const twoHoursAgo = new Date(Date.now() - 7200000).toISOString();
+
+    google = installGoogleMock({
+      Open: [
+        buildRow({ 'RMA ID': 'RMA-NEVER', 'Last Edited Timestamp': anHourAgo }),
+        buildRow({
+          'RMA ID': 'RMA-STALE',
+          'Last Edited Timestamp': anHourAgo,
+          'Last WhatsApp Sent': twoHoursAgo
+        }),
+        buildRow({
+          'RMA ID': 'RMA-CURRENT',
+          'Last Edited Timestamp': anHourAgo,
+          'Last WhatsApp Sent': halfAnHourAgo
+        })
+      ]
+    });
+
+    const metrics = await computeReportMetrics(env);
+    const byId = Object.fromEntries(metrics.openTickets.map((r) => [r['RMA ID'], r._messageState]));
+
+    expect(byId).toEqual({
+      'RMA-NEVER': 'never',
+      // Messaged, but the ticket moved afterwards — the customer is holding
+      // an out-of-date answer, which is no better than none.
+      'RMA-STALE': 'stale',
+      'RMA-CURRENT': 'current'
+    });
+    expect(metrics.awaitingNotification.map((r) => r['RMA ID'])).toEqual(['RMA-NEVER', 'RMA-STALE']);
+  });
+
   it('renders every section of the PDF from that snapshot', async () => {
     const metrics = await computeReportMetrics(env);
     const bytes = await buildReportPdf(metrics);
@@ -108,6 +143,7 @@ describe('computeReportMetrics', () => {
     const metrics = await computeReportMetrics(env);
     expect(metrics.openTickets).toEqual([]);
     expect(metrics.brandCounts).toEqual([]);
+    expect(metrics.awaitingNotification).toEqual([]);
 
     const bytes = await buildReportPdf(metrics);
     expect(String.fromCharCode(...bytes.slice(0, 5))).toBe('%PDF-');

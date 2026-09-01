@@ -53,6 +53,16 @@ function fmtDays(n) {
   return n.toFixed(n < 10 ? 1 : 0);
 }
 
+// A ticket's WhatsApp history in one narrow column. "Stale" is the case
+// worth spotting: a message did go out, but the ticket has changed since,
+// so what the customer was told is no longer true.
+function fmtLastMessage(record) {
+  if (record._messageState === 'never') return 'never';
+  const days = record._daysSinceMessage;
+  const age = days === null ? '?' : days === 0 ? 'today' : `${days}d ago`;
+  return record._messageState === 'stale' ? `${age} (old)` : age;
+}
+
 function polarPoint(cx, cy, r, angleDeg) {
   const rad = ((angleDeg - 90) * Math.PI) / 180;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -453,24 +463,53 @@ export async function buildReportPdf(metrics) {
     }
   );
 
+  // The chase list. Sits with the red flags because it is the same kind of
+  // section — work someone has to pick up — rather than a statistic.
+  table(
+    'Customers Awaiting an Update',
+    [
+      { label: 'RMA ID', width: 100, chars: 18 },
+      { label: 'Customer', width: 130, chars: 23 },
+      { label: 'Mobile', width: 100, chars: 17 },
+      { label: 'Status', width: 110, chars: 19 },
+      { label: 'Last Msg', width: CONTENT_WIDTH - 440, chars: 12 }
+    ],
+    metrics.awaitingNotification.map((r) => [
+      r['RMA ID'],
+      r['Customer Name'],
+      r['Mobile Number'],
+      r['Status'],
+      fmtLastMessage(r)
+    ]),
+    {
+      caption: metrics.awaitingNotification.length
+        ? plural(metrics.awaitingNotification.length, 'ticket', 'tickets')
+        : undefined,
+      emptyLabel: 'Every open ticket has been messaged since it last changed.',
+      rowColor: COLORS.amber
+    }
+  );
+
   // Closes the report with the full picture: every ticket still in the shop,
   // oldest first, so the longest-waiting device is the first line read rather
   // than something buried mid-table.
   table(
     'All Currently Open Tickets',
     [
-      { label: 'RMA ID', width: 100, chars: 18 },
-      { label: 'Customer', width: 125, chars: 22 },
-      { label: 'Product', width: 110, chars: 19 },
-      { label: 'Status', width: 105, chars: 18 },
-      { label: 'Days Open', width: CONTENT_WIDTH - 440, chars: 10 }
+      { label: 'RMA ID', width: 98, chars: 18 },
+      { label: 'Customer', width: 112, chars: 20 },
+      { label: 'Product', width: 98, chars: 17 },
+      { label: 'Status', width: 100, chars: 17 },
+      { label: 'Days Open', width: 52, chars: 7 },
+      { label: 'Last Msg', width: CONTENT_WIDTH - 460, chars: 12 }
     ],
     metrics.openTickets.map((r) => [
       r['RMA ID'],
       r['Customer Name'],
       r['Product Type'],
       r['Status'],
-      r._daysOpen === null ? '—' : String(r._daysOpen)
+      r._daysOpen === null ? '—' : String(r._daysOpen),
+      fmtLastMessage(r)
     ]),
     {
       caption: plural(metrics.openTickets.length, 'ticket', 'tickets'),

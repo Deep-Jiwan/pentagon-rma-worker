@@ -4,6 +4,8 @@
 // it. This is what lets test/*.test.js call the Worker's actual fetch()
 // handler end-to-end without any real credentials or network access.
 
+import { LAST_COL } from '../../src/constants.js';
+
 const SHEET_IDS = { Open: 1, Closed: 2, Master: 3 };
 const ID_TO_TAB = { 1: 'Open', 2: 'Closed', 3: 'Master' };
 
@@ -38,15 +40,15 @@ export function installGoogleMock(initialData = {}) {
       });
     }
 
-    // GET .../values/{tab}!A2:W
-    const getMatch = url.match(/\/values\/([^!]+)!A2:W$/);
+    // GET .../values/{tab}!A2:<LAST_COL>
+    const getMatch = url.match(new RegExp(`/values/([^!]+)!A2:${LAST_COL}$`));
     if (getMatch && method === 'GET') {
       const tab = decodeURIComponent(getMatch[1]);
       return jsonResponse({ values: sheetData[tab] || [] });
     }
 
-    // POST .../values/{tab}!A:W:append?...
-    const appendMatch = url.match(/\/values\/([^!]+)!A:W:append/);
+    // POST .../values/{tab}!A:<LAST_COL>:append?...
+    const appendMatch = url.match(new RegExp(`/values/([^!]+)!A:${LAST_COL}:append`));
     if (appendMatch && method === 'POST') {
       const tab = decodeURIComponent(appendMatch[1]);
       const body = JSON.parse(init.body);
@@ -55,8 +57,8 @@ export function installGoogleMock(initialData = {}) {
       return jsonResponse({});
     }
 
-    // PUT .../values/{tab}!A{n}:W{n}?...
-    const updateMatch = url.match(/\/values\/([^!]+)!A(\d+):W\d+/);
+    // PUT .../values/{tab}!A{n}:<LAST_COL>{n}?...
+    const updateMatch = url.match(new RegExp(`/values/([^!]+)!A(\\d+):${LAST_COL}\\d+`));
     if (updateMatch && method === 'PUT') {
       const tab = decodeURIComponent(updateMatch[1]);
       const rowNumber = parseInt(updateMatch[2], 10);
@@ -71,8 +73,8 @@ export function installGoogleMock(initialData = {}) {
       const { sheetId, startIndex, endIndex } = body.requests[0].deleteDimension.range;
       const tab = ID_TO_TAB[sheetId];
       // startIndex/endIndex are 0-indexed over the WHOLE sheet (row 0 = the
-      // header row), but sheetData[tab] only holds data rows (what A2:W
-      // returns) — shift by 1 to land on the right array index.
+      // header row), but sheetData[tab] only holds data rows (what the
+      // A2:<LAST_COL> read returns) — shift by 1 for the right array index.
       sheetData[tab].splice(startIndex - 1, endIndex - startIndex);
       return jsonResponse({});
     }

@@ -93,6 +93,10 @@ export default {
       if (url.pathname === '/reports/generate' && request.method === 'POST') {
         return await handleGenerateReport(request, env);
       }
+      const whatsappMatch = url.pathname.match(/^\/tickets\/([^/]+)\/whatsapp-sent$/);
+      if (whatsappMatch && request.method === 'POST') {
+        return await handleWhatsAppSent(request, env, decodeURIComponent(whatsappMatch[1]));
+      }
       const pdfMatch = url.pathname.match(/^\/tickets\/([^/]+)\/pdf$/);
       if (pdfMatch && request.method === 'POST') {
         return await handleUploadTicketPdf(request, env, decodeURIComponent(pdfMatch[1]));
@@ -167,6 +171,62 @@ async function handleUploadTicketPdf(request, env, rmaId) {
   const filename = `${rmaId}.pdf`;
   await uploadPdf(env, filename, bytes);
   return json({ rmaId, filename }, 200, request);
+}
+
+// POST /tickets/:rmaId/whatsapp-sent — records that a technician pressed
+// send on a WhatsApp message for this ticket. Body: { type: "intake" | "update" }.
+//
+// This is a send *attempt*, not a delivery receipt, and the distinction
+// matters: both send paths in the frontend (the OS share sheet for the
+// intake PDF, and the whatsapp:// deep link for text) hand off to WhatsApp
+// on the technician's own phone and get nothing back — not a callback, not
+// even which app was chosen. So a stamp here means "the compose screen was
+// opened with the message in it". A technician who then backs out leaves a
+// false positive behind. Real sent/delivered/read status needs the WhatsApp
+// Business Cloud API and its webhooks; see README.
+//
+// Deliberately does NOT touch Last Edited Timestamp. The report's "customer
+// not updated" check asks whether the last message came after the last
+// change to the ticket, and stamping the edit clock here would make every
+// message instantly look current — the check would never fire.
+const WHATSAPP_MESSAGE_TYPES = ['intake', 'update'];
+
+async function handleWhatsAppSent(request, env, rmaId) {
+  const body = await request.json().catch(() => ({}));
+  const type = body.type || 'update';
+  if (!WHATSAPP_MESSAGE_TYPES.includes(type)) {
+    return json({ error: `type must be one of ${WHATSAPP_MESSAGE_TYPES.join(', ')}` }, 400, request);
+  }
+
+  const accessToken = await getAccessToken(env);
+  const sentAt = new Date().toISOString();
+
+  // Open first, since that's where a ticket being messaged about almost
+  // always lives; Closed covers a message sent right after collection.
+  let stamped = false;
+  for (const tab of ['Open', 'Closed']) {
+    const found = await findRowByRmaId(env, accessToken, tab, rmaId);
+    if (!found) continue;
+
+    const record = rowToObject(found.values);
+    record['Last WhatsApp Sent'] = sentAt;
+    record['Last WhatsApp Type'] = type;
+    await updateRow(env, accessToken, tab, found.sheetRowNumber, objectToRow(record));
+    stamped = true;
+    break;
+  }
+
+  if (!stamped) return json({ error: `RMA ID ${rmaId} not found` }, 404, request);
+
+  const masterFound = await findRowByRmaId(env, accessToken, 'Master', rmaId);
+  if (masterFound) {
+    const masterRecord = rowToObject(masterFound.values);
+    masterRecord['Last WhatsApp Sent'] = sentAt;
+    masterRecord['Last WhatsApp Type'] = type;
+    await updateRow(env, accessToken, 'Master', masterFound.sheetRowNumber, objectToRow(masterRecord));
+  }
+
+  return json({ rmaId, sentAt, type }, 200, request);
 }
 
 // GET /tickets/:rmaId/pdf — fetches a previously-saved ticket PDF back out

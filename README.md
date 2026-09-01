@@ -39,6 +39,19 @@ Make sure the sheet is shared with the service account's email as
 **Editor** (done in the earlier step) — otherwise every request will
 fail with a permissions error from the Sheets API.
 
+### Sheet columns
+
+`src/constants.js` `HEADERS` maps sheet columns **A..Y** to field names on
+every read and write, in order. The sheet's header row has to match it
+exactly. If you add a field there, add the header cell to the **Open,
+Closed and Master** tabs and bump `LAST_COL`, or reads and writes shear by
+a column.
+
+Columns **X (`Last WhatsApp Sent`)** and **Y (`Last WhatsApp Type`)** were
+added after the original `setup_rma_tracker.gs` run; an older sheet needs
+those two header cells added by hand before deploying. Existing rows can
+stay blank — a blank reads as "no message recorded".
+
 Daily PDF reports are stored in the `RMA_REPORTS` R2 bucket (bound in
 `wrangler.toml`) rather than Google Drive — service accounts have no
 storage quota of their own outside a Google Workspace Shared Drive,
@@ -119,11 +132,33 @@ Master.
 Builds the status report fresh from the sheet's *current* state (not a
 cached daily snapshot) — KPI totals, open status breakdown, top-brands
 pie, warranty mix, average turnaround, today's devices in and out, the
-red-flagged list, and a closing table of every currently open ticket —
+red-flagged list, the customers still owed a WhatsApp, and a closing table
+of every currently open ticket —
 saves it into the `RMA_REPORTS` R2 bucket as `RMA-Report-Latest.pdf`, and
 streams it back directly. The bucket itself is never made public, since the report
 contains customer names and phone numbers. The daily CRON report below
 is unaffected — it still runs on schedule and keeps its own dated copies.
+
+**POST `/tickets/:rmaId/whatsapp-sent`**
+Body `{ "type": "intake" | "update" }` (defaults to `update`). Stamps
+`Last WhatsApp Sent` / `Last WhatsApp Type` on the ticket's row in Open (or
+Closed) and mirrors it into Master.
+
+This records that a technician **pressed send**, not that WhatsApp
+delivered anything. Both send paths in the frontend — the OS share sheet
+for the intake PDF, and the `whatsapp://` deep link for text — hand off to
+WhatsApp on the technician's own phone and get nothing back: no callback,
+not even which app was chosen. A technician who opens the compose screen
+and backs out leaves a false positive behind. Genuine sent/delivered/read
+status would mean moving to the WhatsApp Business Cloud API (a verified
+Meta business, a dedicated business number rather than the technician's
+own, pre-approved templates outside the 24-hour service window, per-message
+cost) and receiving its status webhooks here.
+
+Deliberately does *not* touch `Last Edited Timestamp`: the report's
+"Customers Awaiting an Update" section asks whether the last message came
+after the last change to the ticket, and stamping the edit clock here would
+make every message look current the instant it was recorded.
 
 **POST `/tickets/:rmaId/pdf`**
 Body is the raw PDF bytes (`Content-Type: application/pdf`), stored into

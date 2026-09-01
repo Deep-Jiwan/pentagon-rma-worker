@@ -25,6 +25,20 @@ function daysSince(isoString, now) {
   return Math.max(0, Math.floor((now - parsed) / 86400000));
 }
 
+// Has the customer been told about the ticket as it stands now? A message
+// is "current" only if it went out *after* the ticket last changed —
+// messaging a customer about a diagnosis and then changing the diagnosis
+// leaves them just as uninformed as never writing at all. Tickets whose
+// clocks are unreadable count as messaged, so a malformed timestamp can't
+// manufacture a chase-list entry.
+function messageState(record) {
+  const sentMs = Date.parse(record['Last WhatsApp Sent']);
+  if (!sentMs) return 'never';
+  const editedMs = Date.parse(record['Last Edited Timestamp']);
+  if (!editedMs) return 'current';
+  return sentMs >= editedMs ? 'current' : 'stale';
+}
+
 function sortedEntries(counts) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 }
@@ -39,7 +53,8 @@ function countBy(records, field) {
 }
 
 // The day's operational snapshot — what came in today, what went out today,
-// and the current open/red-flag state — plus the standing shop-level mix
+// the current open/red-flag state, and who is still owed a WhatsApp — plus
+// the standing shop-level mix
 // (top brands, warranty split, average turnaround) that the frontend's Report
 // tab shows, so the downloaded PDF and the in-app view tell the same story.
 // The mix figures are the only part that reads the Closed tab as history;
@@ -69,8 +84,17 @@ export async function computeReportMetrics(env) {
   // moved today. `_daysOpen` is null when Date In is missing/unparseable;
   // those tickets still belong in the list, they just can't be aged.
   const openTickets = openRows
-    .map((r) => ({ ...r, _daysOpen: daysSince(r['Date In'], now) }))
+    .map((r) => ({
+      ...r,
+      _daysOpen: daysSince(r['Date In'], now),
+      _daysSinceMessage: daysSince(r['Last WhatsApp Sent'], now),
+      _messageState: messageState(r)
+    }))
     .sort((a, b) => (b._daysOpen ?? -1) - (a._daysOpen ?? -1));
+
+  // The chase list: open tickets the customer hasn't been written to since
+  // the ticket last moved. Oldest-waiting first, same as openTickets.
+  const awaitingNotification = openTickets.filter((r) => r._messageState !== 'current');
 
   // Averaging the whole Closed history would let long-gone outliers drag the
   // number forever, so this is the most recent slice only.
@@ -106,6 +130,7 @@ export async function computeReportMetrics(env) {
     devicesInToday,
     devicesOutToday,
     redFlagged,
-    openTickets
+    openTickets,
+    awaitingNotification
   };
 }
